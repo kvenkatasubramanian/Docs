@@ -50,7 +50,7 @@ Commands:
   recover-cluster   Re-run the precheck, ask for confirmation, then let the operator rebuild the cluster.
                     Appends O1_G2_Certificate.pem (from the current directory or next to the script) to
                     /etc/opt/redislabs/trusted_ca.pem in each pod as it comes up during the rebuild, and
-                    once more on every pod afterwards.
+                    once more on every pod afterwards; each append is followed by supervisorctl restart all.
   recover-db        Recover every database that is in recovery state: standard databases with their data,
                     Active-Active databases with data or configuration-only (you are asked per database).
   all               precheck -> backup -> confirmation -> recover-cluster -> recover-db

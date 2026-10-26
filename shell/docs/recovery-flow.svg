@@ -96,11 +96,11 @@
 
     <text x="685" y="282" text-anchor="middle">1. O1_G2_Certificate.pem must be next to the script</text>
     <text x="685" y="298" text-anchor="middle">2. clusterRecovery: true</text>
-    <text x="685" y="314" text-anchor="middle">3. wait Running; append the certificate to</text>
-    <text x="685" y="330" text-anchor="middle">    trusted_ca.pem on each pod as it comes up</text>
+    <text x="685" y="314" text-anchor="middle">3. wait Running; on each pod as it comes up: append the</text>
+    <text x="685" y="330" text-anchor="middle">    certificate to trusted_ca.pem, supervisorctl restart all</text>
     <text x="685" y="346" text-anchor="middle">4. nodes OK, no running actions</text>
-    <text x="685" y="362" text-anchor="middle">5. all pods checked again; append where missing,</text>
-    <text x="685" y="378" text-anchor="middle">    supervisorctl restart all on those pods</text>
+    <text x="685" y="362" text-anchor="middle">5. all pods checked again; append + restart</text>
+    <text x="685" y="378" text-anchor="middle">    where the certificate is still missing</text>
     <text x="685" y="394" text-anchor="middle">6. rladmin cluster master set &lt;other node&gt;</text>
 
     <text x="1025" y="282" text-anchor="middle">rladmin recover list</text>

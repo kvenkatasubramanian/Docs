@@ -34,10 +34,11 @@ BACKUP_MAX_BYTES="${BACKUP_MAX_BYTES:-21474836480}" # skip per-pod DB archive ab
 # Customer CA certificate. recover-cluster and all require this file on the workstation (looked up in the
 # current directory, then next to rec-recover.sh). After clusterRecovery is patched, its content is appended
 # to TRUSTED_CA_PATH in each pod as the pod comes up, and once more on every pod after the rebuild, wherever
-# the certificate is not already present. The operator's first-pod recovery needs the certificate there.
+# the certificate is not already present, each append followed at once by `supervisorctl restart all` on
+# that pod. The operator's first-pod recovery needs the certificate there.
 CA_CERT_FILE="${CA_CERT_FILE:-O1_G2_Certificate.pem}"
 TRUSTED_CA_PATH="${TRUSTED_CA_PATH:-/etc/opt/redislabs/trusted_ca.pem}"
-RESTART_AFTER_RESTORE="${RESTART_AFTER_RESTORE:-true}"   # supervisorctl restart all on pods where the certificate was appended after the rebuild
+RESTART_AFTER_RESTORE="${RESTART_AFTER_RESTORE:-true}"   # supervisorctl restart all on a pod right after the certificate was appended there
 SWITCH_MASTER="${SWITCH_MASTER:-true}"                   # after recovery, move the cluster master to another node (rladmin cluster master set)
 NEW_MASTER_NODE="${NEW_MASTER_NODE:-}"                   # node id to promote; empty = lowest healthy node id that is not the current master
 

@@ -105,15 +105,15 @@ continue.** To write the archives somewhere bigger, set `ARTIFACT_ROOT` in the s
 4. Waits until the REC is `Running` and the operator has cleared the flag, then until every pod is Ready.
    **While waiting, completes `trusted_ca.pem` with the customer CA certificate**: on every poll, each pod
    that is up and has `/etc/opt/redislabs/trusted_ca.pem` gets the content of `O1_G2_Certificate.pem`
-   appended at the bottom, keeping the file's owner and mode, unless the certificate is already in it. The
-   operator's first-pod recovery needs the certificate and otherwise sits in `RecoveringFirstPod`. No
-   services are restarted at this point, because the operator is driving the rebuild.
+   appended at the bottom, keeping the file's owner and mode, unless the certificate is already in it, and
+   `supervisorctl restart all` runs on that pod straight away so the services load the new file. The
+   operator's first-pod recovery needs the certificate and otherwise sits in `RecoveringFirstPod`.
 5. Checks `rladmin status`: every node `OK`, no running cluster actions.
 6. **Checks every pod again.** All pods must be reachable and have `trusted_ca.pem`; a pod without the file
-   stops the command here. The certificate is appended wherever it is still missing, and
-   `supervisorctl restart all` runs on those pods only, one at a time. Nothing is restarted on pods that
-   already carry it. The file as it was before and after each append is kept under the run's `trusted_ca/`
-   folder.
+   stops the command here. Wherever the certificate is still missing it is appended and that pod gets
+   `supervisorctl restart all`, one pod at a time, waiting for every node to be `OK` again before the next.
+   Nothing is restarted on pods that already carry it. The file as it was before and after each append is
+   kept under the run's `trusted_ca/` folder.
 7. **Moves the cluster master to another node** with `rladmin cluster master set <id>`: the lowest healthy
    node that is not the current master, or `NEW_MASTER_NODE` from the settings file. Turn off with
    `SWITCH_MASTER=false`.

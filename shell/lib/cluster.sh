@@ -11,8 +11,7 @@
 #   phase_recover_cluster   patch spec.clusterRecovery=true, wait for Running AND the flag being
 #                           cleared by the operator, wait for pods (MUTATING)
 #   phase_validate_cluster  rladmin status, all nodes OK, no running actions
-#   restart_changed_pods    supervisorctl restart all on the pods where the certificate was appended after
-#                           the rebuild
+#   (every append is followed at once by `supervisorctl restart all` on that pod)
 #   switch_master           rladmin cluster master set <another node>
 # =============================================================================
 
@@ -22,7 +21,7 @@
 TRUSTED_CA_DIR="${TRUSTED_CA_DIR:-$ARTIFACT_DIR/trusted_ca}"
 CA_CERT_PATH=""              # resolved by require_ca_cert_file
 CA_CERT_BODY=""              # the certificate with CR/LF removed; used for the "already present" test
-TRUSTED_CA_CHANGED_PODS=""   # pods where the certificate was appended after the rebuild (to restart)
+TRUSTED_CA_CHANGED_PODS=""   # pods where the certificate was appended (and services restarted)
 TRUSTED_CA_MISSING_PODS=""   # pods still without trusted_ca.pem during the rebuild (for the timeout message)
 
 # _pod_file_exists <pod> <path>
@@ -75,6 +74,7 @@ _append_cert_to_pod() {
       *)      report_add "$P" "$pod" PASS "$(basename "$CA_CERT_PATH") appended to $TRUSTED_CA_PATH" ;;
     esac
     TRUSTED_CA_CHANGED_PODS="$TRUSTED_CA_CHANGED_PODS $pod"
+    _restart_pod_services "$pod" "$P" "$mode"
     return 0
   fi
   if [ "$mode" = during ]; then
@@ -89,7 +89,7 @@ _append_cert_to_pod() {
 #   pod unreachable          during: skip (not up yet)                               post: FAIL
 #   trusted_ca.pem missing   during: skip, retry next poll (operator has not written it)  post: FAIL (nothing to append to; the script stops)
 #   certificate present      during: silent                                          post: PASS
-#   otherwise                append the certificate
+#   otherwise                append the certificate, then `supervisorctl restart all` on that pod
 # Returns 1 when anything failed in post. During the rebuild nothing is fatal.
 ensure_trusted_ca() {
   local mode="$1" P pod rc=0 appended=0 present=0
@@ -127,35 +127,37 @@ ensure_trusted_ca() {
   done
 
   if [ "$mode" != during ]; then
-    report_add $P summary INFO "certificate appended on $appended pod(s), already present on $present; copies under $TRUSTED_CA_DIR"
+    if [ "$appended" -gt 0 ]; then
+      report_add $P summary INFO "certificate appended and services restarted on $appended pod(s), already present on $present; copies under $TRUSTED_CA_DIR"
+    else
+      report_add $P summary INFO "every pod already carries the certificate; no restart needed"
+    fi
   fi
   return $rc
 }
 
-# restart_changed_pods  - supervisorctl restart all on each pod where the certificate was appended after the
-# rebuild, one pod at a time, waiting for every node to be OK again before the next one.
-restart_changed_pods() {
-  local P=trusted-ca-after pod
-  if [ -z "$TRUSTED_CA_CHANGED_PODS" ]; then
-    report_add $P restart INFO "no restart needed; every pod already carried the certificate"
-    return 0
-  fi
+# _restart_pod_services <pod> <phase-label> <mode>  - `supervisorctl restart all` right after the certificate
+# was appended on that pod, so the services load the new trusted_ca.pem at once. After the rebuild (post) the
+# script also waits until every node reports OK again before moving on; during the rebuild it does not wait,
+# because the cluster is not formed yet and the operator keeps driving the recovery.
+_restart_pod_services() {
+  local pod="$1" P="$2" mode="$3"
   if [ "$RESTART_AFTER_RESTORE" != "true" ]; then
-    report_add $P restart WARN "RESTART_AFTER_RESTORE=false; services not restarted on:$TRUSTED_CA_CHANGED_PODS. The new certificate is picked up at the next restart."
+    report_add "$P" "$pod-restart" WARN "RESTART_AFTER_RESTORE=false; services on $pod not restarted. The new certificate is picked up at the next restart."
     return 0
   fi
-  for pod in $TRUSTED_CA_CHANGED_PODS; do
-    log "restarting Redis Enterprise services on $pod (supervisorctl restart all)"
-    if pod_exec "$pod" supervisorctl restart all >>"$LOG_FILE" 2>&1; then
-      if _wait_node_ok "$pod"; then
-        report_add $P "$pod-restart" PASS "services restarted, all nodes OK"
-      else
-        report_add $P "$pod-restart" WARN "services restarted but nodes not all OK within ${TIMEOUT_POD}s; check rladmin status"
-      fi
-    else
-      report_add $P "$pod-restart" FAIL "supervisorctl restart all failed on $pod"
-    fi
-  done
+  log "restarting Redis Enterprise services on $pod (supervisorctl restart all)"
+  if ! pod_exec "$pod" supervisorctl restart all >>"$LOG_FILE" 2>&1; then
+    report_add "$P" "$pod-restart" FAIL "supervisorctl restart all failed on $pod (see $LOG_FILE)"
+    return 1
+  fi
+  if [ "$mode" = during ]; then
+    report_add "$P" "$pod-restart" PASS "services restarted on $pod right after the append"
+  elif _wait_node_ok "$pod"; then
+    report_add "$P" "$pod-restart" PASS "services restarted on $pod, all nodes OK"
+  else
+    report_add "$P" "$pod-restart" WARN "services restarted on $pod but nodes not all OK within ${TIMEOUT_POD}s; check rladmin status"
+  fi
   return 0
 }
 
@@ -303,9 +305,8 @@ phase_recover_cluster() {
   RL_POD="" # pods were recreated; re-select
   phase_validate_cluster || return 1
 
-  # --- Certificate into trusted_ca.pem on every pod after the rebuild, restart where appended -----
+  # --- Certificate into trusted_ca.pem on every pod after the rebuild (append + restart where missing) ---
   ensure_trusted_ca post || return 1
-  restart_changed_pods
 
   # --- Move the cluster master to another node -------------------------------------------
   switch_master

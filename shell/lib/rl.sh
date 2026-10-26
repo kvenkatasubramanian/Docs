@@ -120,7 +120,8 @@ rl_recover_list() {
     }'
 }
 
-# rl_status_nodes  -> lines "<node:id>|<role>|<address>|<status>"  (STATUS is the last column)
+# rl_status_nodes  -> lines "<node:id>|<role>|<address>|<status>"  (STATUS is the last column;
+# the leading * on a row means "this is the node rladmin runs on", not the master, so it is stripped)
 rl_status_nodes() {
   rl status nodes 2>/dev/null | awk '
     /^NODE:ID/ { hdr = 1; next }
@@ -128,6 +129,34 @@ rl_status_nodes() {
       id = $1; sub(/^\*/, "", id)
       printf "%s|%s|%s|%s\n", id, $2, $3, $NF
     }'
+}
+
+# rl_master_node_id  -> numeric id of the current master node, empty if unknown.
+# Uses the ROLE column (master|slave). The leading * only marks the node rladmin is running on.
+rl_master_node_id() {
+  rl_status_nodes | awk -F'|' '$2 == "master" { sub(/^node:/, "", $1); print $1; exit }'
+}
+
+# rl_node_address <id>  -> internal address of a node
+rl_node_address() {
+  rl_status_nodes | awk -F'|' -v id="node:$1" '$1 == id { print $3; exit }'
+}
+
+# pod_for_node <id>  -> pod whose podIP matches the node's address, empty if not found
+pod_for_node() {
+  local addr
+  addr="$(rl_node_address "$1")"
+  [ -n "$addr" ] || return 1
+  ocn get pods -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.podIP}{"\n"}{end}' 2>/dev/null \
+    | awk -F'\t' -v a="$addr" -v re="^${REC}-[0-9]+$" '$2 == a && $1 ~ re { print $1; exit }'
+}
+
+# master_pod  -> pod name of the current master node, empty if the cluster cannot tell us
+master_pod() {
+  local id
+  id="$(rl_master_node_id)"
+  [ -n "$id" ] || return 1
+  pod_for_node "$id"
 }
 
 # rl_status_databases  -> lines "<db:id>|<name>|<type>|<status>"

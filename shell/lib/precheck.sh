@@ -2,12 +2,13 @@
 # =============================================================================
 # precheck.sh - runbook steps 1, 2 and 4 (read-only)
 #
-# Produces a verdict and an approval token:
+# Produces a verdict (also stored in PRECHECK_VERDICT for the other phases):
 #   RECOVERY_NOT_NEEDED   cluster healthy; do not trigger clusterRecovery
 #   RECOVERY_RECOMMENDED  quorum loss / unhealthy cluster
 #   BLOCKED               a prerequisite is missing; fix before any recovery
 #
 # All cluster objects are read with `oc -o jsonpath`; no jq on the workstation.
+PRECHECK_VERDICT="${PRECHECK_VERDICT:-}"
 # =============================================================================
 
 phase_precheck() {
@@ -21,7 +22,7 @@ phase_precheck() {
     report_add $P rec-exists FAIL \
       "REC $REC not found in $NS. Recreate it from the original manifest (same name, version, persistence," \
       "storageClass, nodes, credentials) BEFORE patching clusterRecovery. This script will not recreate it."
-    write_state BLOCKED ""
+    PRECHECK_VERDICT=BLOCKED
     return 1
   fi
 
@@ -69,7 +70,7 @@ phase_precheck() {
   notbound="$(printf '%s\n' "$pvcs" | awk -F'\t' 'NF && $2 != "Bound" { print $1 }')"
 
   if [ "$pvc_count" -eq 0 ]; then
-    report_add $P pvc FAIL "no PVCs matching $REC found; Method A requires the original PVCs."
+    report_add $P pvc FAIL "no PVCs matching $REC found; this recovery needs the original persistent volumes."
     blocked=1
   elif [ -n "$notbound" ]; then
     report_add $P pvc FAIL "PVCs not Bound: $(echo "$notbound" | tr '\n' ' ')"
@@ -191,8 +192,8 @@ phase_precheck() {
       "could not list modules via REST (cluster down, or no jq/python inside the pod). Review spec.modulesList in $ARTIFACT_DIR/redb.yaml manually."
   fi
 
-  # --- Verdict and approval token ------------------------------------------------
-  local verdict token
+  # --- Verdict -------------------------------------------------------------------
+  local verdict
   if [ "$blocked" -eq 1 ]; then
     verdict=BLOCKED
   elif [ "$recommend" -eq 1 ]; then
@@ -200,34 +201,26 @@ phase_precheck() {
   else
     verdict=RECOVERY_NOT_NEEDED
   fi
-
-  if [ "$EXECUTE" = "true" ] && [ -n "$TOKEN" ] && [ "$verdict" != "BLOCKED" ] && [ -f "$STATE_FILE" ]; then
-    # Execute run: keep the approval from the earlier precheck so the supplied token stays valid.
-    token="$(state_get TOKEN)"
-    report_add $P approval INFO \
-      "execute mode: retaining approval token from precheck run $(state_get RUN_ID) (current verdict $verdict)"
-  else
-    token="$(compute_token "$rec_uid" "$RUN_ID")"
-    write_state "$verdict" "$token" "$nodes" "$version" "$n_reaadb"
-  fi
+  PRECHECK_VERDICT="$verdict"
   report_add $P verdict INFO "VERDICT=$verdict"
 
   case "$verdict" in
     BLOCKED)
-      verdict_box "$verdict" "" \
+      verdict_box "$verdict" \
         "${C_RED}Resolve the FAIL findings above before any recovery.${C_RESET}"
       ;;
     RECOVERY_NOT_NEEDED)
-      verdict_box "$verdict" "$token" \
-        "${C_GREEN}Cluster appears healthy.${C_RESET} Do not trigger clusterRecovery for single-pod/node faults." \
-        "Use ${C_BOLD}--force${C_RESET} only if you are certain quorum is lost."
+      verdict_box "$verdict" \
+        "${C_GREEN}Cluster appears healthy.${C_RESET} Do not trigger a cluster recovery for single-pod or node faults." \
+        "Let the operator reconcile and re-run ${C_BOLD}$0 precheck${C_RESET} in a few minutes."
       ;;
     RECOVERY_RECOMMENDED)
-      verdict_box "$verdict" "$token" \
-        "${C_ORANGE}Quorum loss / unhealthy cluster detected.${C_RESET} To proceed:" \
-        "  ${C_BOLD}$0 backup${C_RESET}" \
-        "  ${C_BOLD}$0 recover-cluster --execute --token $token${C_RESET}" \
-        "${C_DIM}Token valid for $((TOKEN_TTL / 60)) minutes.${C_RESET}"
+      verdict_box "$verdict" \
+        "${C_ORANGE}Quorum loss / unhealthy cluster detected.${C_RESET} Next:" \
+        "  ${C_BOLD}$0 backup${C_RESET}            archive CCS + database files, copy them off the cluster" \
+        "  ${C_BOLD}$0 recover-cluster${C_RESET}   operator rebuilds the cluster (asks for confirmation)" \
+        "  ${C_BOLD}$0 recover-db${C_RESET}        recover every database" \
+        "${C_DIM}or run all of them with: $0 all${C_RESET}"
       ;;
   esac
 

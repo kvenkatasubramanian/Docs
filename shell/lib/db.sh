@@ -2,12 +2,15 @@
 # =============================================================================
 # db.sh - runbook steps 9 to 12
 #
-#   phase_plan_db     rladmin recover list -> classify standard vs Active-Active (CRDB),
-#                     apply --recovery-path, print the exact commands           (read-only)
-#   phase_recover_db  one `rladmin recover db` per database, in this order:
-#                     data-bearing CRDBs -> standard DBs -> config-only CRDBs    (MUTATING)
+#   phase_recover_db  rladmin recover list -> classify standard vs Active-Active (CRDB)
+#                     -> decide per CRDB (data or configuration-only) -> confirm
+#                     -> one `rladmin recover db` per database, in this order:
+#                        data-bearing CRDBs, standard DBs, configuration-only CRDBs
 #
 # `rladmin recover all` is never used because CRDBs and standard DBs coexist.
+# Active-Active rule (Redis docs): if other participating clusters are live, recover the
+# local instance configuration-only and let it sync; if ALL participants were down, exactly
+# one instance in the whole deployment is recovered with data, every other one config-only.
 # =============================================================================
 
 # print_db_plan <plan.tsv>  - coloured table on stderr (the tsv stays plain)
@@ -20,9 +23,9 @@ print_db_plan() {
     while IFS="$(printf '\t')" read -r id name kind status action; do
       [ -n "$id" ] || continue
       case "$action" in
-        BLOCKED:* | UNDECIDED*) col="$C_RED" ;;
-        *only_configuration*)   col="$C_ORANGE" ;;
-        *)                      col="$C_GREEN" ;;
+        BLOCKED:*)             col="$C_RED" ;;
+        *only_configuration*)  col="$C_ORANGE" ;;
+        *)                     col="$C_GREEN" ;;
       esac
       printf '  %-7s %-24s %-9s %s%-14s%s %s%s%s\n' \
         "$id" "$name" "$kind" "$col" "$status" "$C_RESET" "$col" "$action" "$C_RESET"
@@ -31,31 +34,49 @@ print_db_plan() {
   } >&2
 }
 
-# Writes $ARTIFACT_DIR/db-plan.tsv:  <db:id> <name> <kind> <status> <action>
-# Returns 0 only when every database is ready and every CRDB has a decision.
-phase_plan_db() {
-  local P=plan-db
-  phase_banner "DATABASE PLAN" "Steps 10, 12 - rladmin recover list, standard vs Active-Active classification"
+# decide_crdb <name>  -> prints "data" or "config-only"
+#   1. explicit lists in rec-recover.env (AA_DATA_BEARING / AA_CONFIG_ONLY)
+#   2. --yes: AA_MODE default
+#   3. interactive question
+decide_crdb() {
+  local name="$1"
+  if csv_contains "$AA_DATA_BEARING" "$name"; then echo data; return; fi
+  if csv_contains "$AA_CONFIG_ONLY" "$name"; then echo config-only; return; fi
+  if [ "$ASSUME_YES" = "true" ]; then
+    case "$AA_MODE" in
+      data) echo data ;;
+      *)    echo config-only ;;
+    esac
+    return
+  fi
+  {
+    printf '\n  %sActive-Active database %s%s%s\n' "$C_BOLD" "$C_ORANGE" "$name" "$C_RESET"
+    printf '  Are the OTHER participating clusters of this database up and serving right now?\n'
+    printf '  %syes%s -> recover configuration only here; data syncs back from the live peers (recommended).\n' "$C_BOLD" "$C_RESET"
+    printf '  %sno%s  -> ALL participants were down; recover THIS instance with its data. Do this on ONE cluster only.\n' "$C_BOLD" "$C_RESET"
+  } >&2
+  if ask_yes_no "peers live for $name?"; then echo config-only; else echo data; fi
+}
+
+phase_recover_db() {
+  local P=recover-db
+  phase_banner "RECOVER DATABASES" \
+    "Steps 9-12 - rladmin recover list, per-database decisions, one rladmin recover db each  (CHANGES THE CLUSTER)"
 
   local plan="$ARTIFACT_DIR/db-plan.tsv"
   : >"$plan"
 
   # --- Step 10 (optional): map the recovery path on every node ------------------
   if [ -n "$RECOVERY_PATH" ]; then
-    if [ "$EXECUTE" = "true" ]; then
-      local nid
-      for nid in $(rl_status_nodes | cut -d'|' -f1 | sed 's/node://'); do
-        if rl node "$nid" recovery_path set "$RECOVERY_PATH" >>"$LOG_FILE" 2>&1; then
-          report_add $P "recovery-path-node-$nid" PASS "recovery_path=$RECOVERY_PATH"
-        else
-          report_add $P "recovery-path-node-$nid" FAIL "rladmin node $nid recovery_path set failed"
-          return 1
-        fi
-      done
-    else
-      report_add $P recovery-path INFO \
-        "would run: rladmin node <id> recovery_path set $RECOVERY_PATH on every node (needs --execute)"
-    fi
+    local nid
+    for nid in $(rl_status_nodes | cut -d'|' -f1 | sed 's/node://'); do
+      if rl node "$nid" recovery_path set "$RECOVERY_PATH" >>"$LOG_FILE" 2>&1; then
+        report_add $P "recovery-path-node-$nid" PASS "recovery_path=$RECOVERY_PATH"
+      else
+        report_add $P "recovery-path-node-$nid" FAIL "rladmin node $nid recovery_path set failed"
+        return 1
+      fi
+    done
   fi
 
   # --- rladmin recover list ------------------------------------------------------
@@ -77,29 +98,27 @@ phase_plan_db() {
     report_add $P crdb-inventory INFO "Active-Active DBs on this cluster: $(echo "$crdbs" | tr '\n' ' ')"
   fi
 
-  # --- Classify every database ------------------------------------------------------
-  local id name type status kind action missing=0 undecided=""
+  # --- Classify and decide ------------------------------------------------------------
+  local id name type status kind action missing=0 decision
   while IFS='|' read -r id name type status; do
     [ -n "$id" ] || continue
 
-    if printf '%s\n' "$crdbs" | grep -qx "$name"; then
-      kind=crdb
-    else
-      kind=standard
-    fi
+    if printf '%s\n' "$crdbs" | grep -qx "$name"; then kind=crdb; else kind=standard; fi
 
     if [ "$status" != "ready" ]; then
       action="BLOCKED:$status"
       missing=1
     elif [ "$kind" = "standard" ]; then
       action="rladmin recover db $name"
-    elif csv_contains "$AA_DATA_BEARING" "$name"; then
-      action="rladmin recover db $name            # CRDB: WITH data (sole data-bearing instance)"
-    elif csv_contains "$AA_CONFIG_ONLY" "$name"; then
-      action="rladmin recover db $name only_configuration   # CRDB: config only, data syncs from live peers"
     else
-      action="UNDECIDED: pass --aa-data-bearing $name OR --aa-config-only $name"
-      undecided="$undecided $name"
+      decision="$(decide_crdb "$name")"
+      if [ "$decision" = "data" ]; then
+        action="rladmin recover db $name            # Active-Active: WITH data (the one data-bearing instance)"
+      else
+        action="rladmin recover db $name only_configuration   # Active-Active: config only, data syncs from peers"
+      fi
+      [ "$ASSUME_YES" = "true" ] && ! csv_contains "$AA_DATA_BEARING$AA_CONFIG_ONLY" "$name" \
+        && report_add $P "aa-$name" WARN "Active-Active decision taken from AA_MODE=$AA_MODE (--yes, no explicit list)"
     fi
 
     printf '%s\t%s\t%s\t%s\t%s\n' "$id" "$name" "$kind" "$status" "$action" >>"$plan"
@@ -109,46 +128,26 @@ phase_plan_db() {
 
   if [ "$missing" -eq 1 ]; then
     report_add $P recover-list FAIL \
-      "databases report missing-files. Fix before recovery: (1) recovery path set correctly on ALL nodes (--recovery-path)," \
-      "(2) files present under $PERSIST_ROOT/$DB_PERSIST_DIR, (3) owner redislabs:redislabs mode 640, (4) files not corrupted."
-  fi
-  if [ -n "$undecided" ]; then
-    report_add $P active-active FAIL \
-      "undecided CRDB(s):$undecided. Rule: if other participating clusters are live -> --aa-config-only;" \
-      "if ALL participants are down -> exactly ONE instance across all clusters gets --aa-data-bearing, every other instance config-only."
+      "databases report missing-files. Fix before recovery: (1) files present under $PERSIST_ROOT/$DB_PERSIST_DIR on the nodes," \
+      "(2) owner redislabs:redislabs mode 640, (3) files not corrupted, (4) set RECOVERY_PATH in rec-recover.env if they live elsewhere."
+    return 1
   fi
 
-  [ "$missing" -eq 0 ] && [ -z "$undecided" ]
-}
-
-phase_recover_db() {
-  local P=recover-db
-  phase_banner "RECOVER DATABASES" \
-    "Steps 11-12 - per-database rladmin recover (data-bearing CRDBs -> standard -> config-only CRDBs)  (MUTATING)"
-  require_approval "recover-db"
-
-  phase_plan_db || die "database plan is not executable; see findings above."
-
-  local plan="$ARTIFACT_DIR/db-plan.tsv"
-  if [ ! -s "$plan" ]; then
-    report_add $P recover INFO "nothing to recover"
-    return 0
-  fi
-
-  local n_crdb
+  # --- Confirm, then recover in three passes -----------------------------------------
+  local n_total n_crdb
+  n_total="$(grep -c . "$plan")"
   n_crdb="$(awk -F'\t' '$3 == "crdb"' "$plan" | wc -l | tr -d ' ')"
-  if [ "$n_crdb" -gt 0 ]; then
-    report_add $P policy INFO "CRDBs present: 'rladmin recover all' will NOT be used; recovering per database."
-  fi
+  confirm "recover $n_total database(s) on $REC ($n_crdb Active-Active)" \
+    "Each database is recovered with its own 'rladmin recover db' in the order shown above:" \
+    "data-bearing Active-Active first, then standard databases, then configuration-only Active-Active."
 
-  # --- Recover in three passes --------------------------------------------------------
-  local pass id name kind status action out rc=0
+  local pass out rc=0
   for pass in data-crdb standard config-crdb; do
     while IFS="$(printf '\t')" read -r id name kind status action; do
       case "$pass" in
-        data-crdb)   { [ "$kind" = "crdb" ] && csv_contains "$AA_DATA_BEARING" "$name"; } || continue ;;
+        data-crdb)   { [ "$kind" = "crdb" ] && [[ "$action" != *only_configuration* ]]; } || continue ;;
         standard)    [ "$kind" = "standard" ] || continue ;;
-        config-crdb) { [ "$kind" = "crdb" ] && csv_contains "$AA_CONFIG_ONLY" "$name"; } || continue ;;
+        config-crdb) { [ "$kind" = "crdb" ] && [[ "$action" == *only_configuration* ]]; } || continue ;;
       esac
 
       log "recovering $name ($id, $kind, pass=$pass)"

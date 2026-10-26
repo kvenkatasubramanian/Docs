@@ -1,50 +1,10 @@
 #!/usr/bin/env bash
 # =============================================================================
-# backup.sh - runbook steps 3 and 5
+# backup.sh - runbook step 5
 #
-#   phase_diagnostics  log_collector.py (best effort, needs python3 >= 3.11)
-#   phase_backup       CCS archive + DB persistence files from every reachable pod,
-#                      sha256 manifest under $ARTIFACT_DIR/backup
-#
-# Both phases are read-only against the cluster.
+#   phase_backup  CCS archive + DB persistence files from every reachable pod,
+#                 sha256 manifest under $ARTIFACT_DIR/backup. Read-only against the cluster.
 # =============================================================================
-
-phase_diagnostics() {
-  local P=diagnostics
-  phase_banner "DIAGNOSTICS" "Step 3 - log_collector.py (best effort)"
-
-  if [ "$SKIP_DIAGNOSTICS" = "true" ]; then
-    report_add $P log-collector SKIP "--skip-diagnostics"
-    return 0
-  fi
-
-  local py pyv
-  py="$(python_bin || echo python3)"
-  pyv="$("$py" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo 0)"
-  if [ "$(printf '%s\n' "3.11" "$pyv" | sort -V | head -1)" != "3.11" ]; then
-    report_add $P log-collector WARN \
-      "python3 >= 3.11 not found (have $pyv); skipping log_collector.py." \
-      "Run it manually per https://redis.io/docs/latest/operate/kubernetes/logs/collect-logs/"
-    return 0
-  fi
-
-  local lc="$ARTIFACT_DIR/log_collector.py"
-  if [ -f "$SCRIPT_ROOT/log_collector.py" ]; then
-    cp "$SCRIPT_ROOT/log_collector.py" "$lc"
-  elif ! curl -sSfL "$LOG_COLLECTOR_URL" -o "$lc" 2>/dev/null; then
-    report_add $P log-collector WARN \
-      "could not download log_collector.py; place a copy at $SCRIPT_ROOT/log_collector.py to enable"
-    return 0
-  fi
-
-  mkdir -p "$ARTIFACT_DIR/logs"
-  if "$py" -I "$lc" -m all -n "$NS" --k8s_cli oc -o "$ARTIFACT_DIR/logs" \
-       >"$ARTIFACT_DIR/log_collector.out" 2>&1; then
-    report_add $P log-collector PASS "logs collected to $ARTIFACT_DIR/logs"
-  else
-    report_add $P log-collector WARN "log_collector.py failed (see $ARTIFACT_DIR/log_collector.out); continuing"
-  fi
-}
 
 phase_backup() {
   local P=backup
@@ -60,14 +20,58 @@ phase_backup() {
   pods="$(reachable_pods)"
   if [ -z "$pods" ]; then
     if [ "$ALLOW_UNBACKED" = "true" ]; then
-      report_add $P reachability WARN "no reachable pods; proceeding WITHOUT backup because --allow-unbacked was set"
+      report_add $P reachability WARN "no reachable pods; proceeding WITHOUT backup because ALLOW_UNBACKED=true"
       return 0
     fi
     report_add $P reachability FAIL \
-      "no reachable REC pods; cannot back up CCS/DB files. Re-run with --allow-unbacked to accept the risk."
+      "no reachable REC pods; cannot back up CCS/DB files. Set ALLOW_UNBACKED=true in rec-recover.env to accept the risk."
     return 1
   fi
   report_add $P reachability INFO "reachable pods: $(echo "$pods" | tr '\n' ' ')"
+
+  # --- Space estimate before writing anything ---------------------------------------------
+  # Sizes are uncompressed (du) and therefore an upper bound; archives are gzip-compressed.
+  local p0_est dbdir_est sz ccs_sz total=0 oversized="" line
+  p0_est="$(echo "$pods" | head -1)"
+  dbdir_est="$PERSIST_ROOT/$DB_PERSIST_DIR"
+  [ -n "$RECOVERY_PATH" ] && dbdir_est="$RECOVERY_PATH"
+  ccs_sz="$(pod_exec "$p0_est" sh -c 'du -sb "$(dirname "$0")" 2>/dev/null | cut -f1' "$PERSIST_ROOT/$CCS_FILE" 2>/dev/null || echo 0)"
+  ccs_sz="${ccs_sz:-0}"
+  total=$((total + ccs_sz))
+  {
+    printf '\n  %sBACKUP SIZE ESTIMATE%s  (uncompressed, upper bound)\n' "$C_BOLD" "$C_RESET"
+    printf '  %-28s %12s\n' "CCS ($p0_est)" "$(human_size "$ccs_sz")"
+  } >&2
+  for line in $pods; do
+    sz="$(pod_exec "$line" sh -c 'test -d "$0" && du -sb "$0" | cut -f1' "$dbdir_est" 2>/dev/null || echo 0)"
+    sz="${sz:-0}"
+    total=$((total + sz))
+    if [ "$sz" -gt "$BACKUP_MAX_BYTES" ]; then
+      oversized="$oversized $line"
+      printf '  %-28s %12s  %s(exceeds BACKUP_MAX_BYTES, will be skipped)%s\n' "DB files ($line)" "$(human_size "$sz")" "$C_ORANGE" "$C_RESET" >&2
+    else
+      printf '  %-28s %12s\n' "DB files ($line)" "$(human_size "$sz")" >&2
+    fi
+  done
+  local free
+  free="$(free_bytes "$bdir")"
+  {
+    printf '  %s%s%s\n' "$C_DIM" "$(_repeat 42 "$S_BAR")" "$C_RESET"
+    printf '  %-28s %12s\n' "Total required (max)" "$(human_size "$total")"
+    printf '  %-28s %12s   %s\n\n' "Free where artifacts live" "$(human_size "$free")" "${C_DIM}$ARTIFACT_ROOT${C_RESET}"
+  } >&2
+  report_add $P space-estimate INFO "backup needs up to $(human_size "$total"); $(human_size "$free") free under $ARTIFACT_ROOT"
+  if [ -n "$oversized" ]; then
+    report_add $P space-estimate WARN \
+      "DB files on$oversized exceed BACKUP_MAX_BYTES ($(human_size "$BACKUP_MAX_BYTES")) and will be skipped; snapshot those PVCs with your storage platform."
+  fi
+  if [ "$total" -gt "$free" ]; then
+    report_add $P space-estimate FAIL \
+      "not enough free space: need up to $(human_size "$total"), have $(human_size "$free"). Free space, or point ARTIFACT_ROOT (rec-recover.env) at a bigger disk."
+    return 1
+  elif [ "$total" -gt $((free * 8 / 10)) ]; then
+    report_add $P space-estimate WARN "backup would use more than 80% of the free space under $ARTIFACT_ROOT"
+  fi
 
   # --- CCS (once, from the first reachable pod) ---------------------------------
   local p0 ccs_path disc
@@ -143,7 +147,7 @@ phase_backup() {
 
   if [ "$failed" -eq 1 ] && [ "$ALLOW_UNBACKED" != "true" ]; then
     report_add $P db-files FAIL \
-      "one or more DB persistence backups failed/skipped. Re-run with --allow-unbacked to proceed anyway."
+      "one or more DB persistence backups failed/skipped. Set ALLOW_UNBACKED=true in rec-recover.env to proceed anyway."
     return 1
   fi
 

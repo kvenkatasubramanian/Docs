@@ -3,7 +3,7 @@
 # common.sh - shared helpers for rec-recover.sh
 #
 # Sourced by rec-recover.sh; never executed directly.
-# Requires: bash >= 3.2, oc, tar, awk, base64. No jq: cluster objects are read with
+# Requires: bash >= 3.2, oc, tar, awk, sed, grep, base64. No jq: cluster objects are read with
 # `oc -o jsonpath`, REST JSON is parsed inside the Redis pod. Colour needs a terminal on stderr.
 # =============================================================================
 
@@ -27,21 +27,28 @@ RL_RECOVER_TIMEOUT="${RL_RECOVER_TIMEOUT:-3600}" # rladmin recover db
 TIMEOUT_REC="${TIMEOUT_REC:-1800}"             # REC -> Running
 TIMEOUT_POD="${TIMEOUT_POD:-900}"              # each pod -> Ready
 POLL_INTERVAL="${POLL_INTERVAL:-15}"
-TOKEN_TTL="${TOKEN_TTL:-14400}"                # approval token validity
 
 # Backup
 BACKUP_MAX_BYTES="${BACKUP_MAX_BYTES:-21474836480}" # skip per-pod DB archive above 20 GiB
-LOG_COLLECTOR_URL="${LOG_COLLECTOR_URL:-https://raw.githubusercontent.com/RedisLabs/redis-enterprise-k8s-docs/master/log_collector/log_collector.py}"
 
-# Gates and decisions
-EXECUTE="${EXECUTE:-false}"
-TOKEN="${TOKEN:-}"
-FORCE="${FORCE:-false}"
-ALLOW_UNBACKED="${ALLOW_UNBACKED:-false}"
-STRICT_MODULES="${STRICT_MODULES:-false}"
-SKIP_DIAGNOSTICS="${SKIP_DIAGNOSTICS:-false}"
-AA_DATA_BEARING="${AA_DATA_BEARING:-}"         # comma-separated CRDB names recovered WITH data
-AA_CONFIG_ONLY="${AA_CONFIG_ONLY:-}"           # comma-separated CRDB names recovered only_configuration
+# Files the operator rebuild is known to overwrite; saved from each pod before the rebuild and
+# restored afterwards (only where the content changed), then Redis Enterprise services are restarted
+# node by node. Space-separated absolute paths inside the Redis Enterprise container.
+PRESERVE_FILES="${PRESERVE_FILES:-/etc/opt/redislabs/trusted_ca.pem}"
+PRESERVE_SCOPE="${PRESERVE_SCOPE:-master}"               # master: save from / restore to the master node only (cluster syncs the rest) | all: every pod
+RESTART_AFTER_RESTORE="${RESTART_AFTER_RESTORE:-true}"   # supervisorctl restart all after restoring a file
+SWITCH_MASTER="${SWITCH_MASTER:-true}"                   # after recovery, move the cluster master to another node (rladmin cluster master set)
+NEW_MASTER_NODE="${NEW_MASTER_NODE:-}"                   # node id to promote; empty = lowest healthy node id that is not the current master
+
+# Behaviour
+ASSUME_YES="${ASSUME_YES:-false}"              # --yes: no prompts
+ALLOW_UNBACKED="${ALLOW_UNBACKED:-false}"      # continue even if the backup step could not archive everything
+STRICT_MODULES="${STRICT_MODULES:-false}"      # treat duplicate module versions as blocking
+# Active-Active (CRDB) handling in recover-db:
+#   interactive runs ask per database; --yes runs use AA_MODE unless the database is listed below.
+AA_MODE="${AA_MODE:-config-only}"              # config-only (peers are live) | data (all participants were down)
+AA_DATA_BEARING="${AA_DATA_BEARING:-}"         # comma-separated CRDB names always recovered WITH data
+AA_CONFIG_ONLY="${AA_CONFIG_ONLY:-}"           # comma-separated CRDB names always recovered configuration-only
 
 # Artifacts
 SCRIPT_ROOT="${SCRIPT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -52,7 +59,6 @@ if [ -d "$ARTIFACT_ROOT/$RUN_ID" ] && [ -z "${ARTIFACT_DIR:-}" ]; then
   RUN_ID="${RUN_ID}-$$"
 fi
 ARTIFACT_DIR="${ARTIFACT_DIR:-$ARTIFACT_ROOT/$RUN_ID}"
-STATE_FILE="$ARTIFACT_ROOT/precheck-state.env" # shared between invocations: verdict + token (KEY=value lines)
 REPORT_TSV="$ARTIFACT_DIR/report.tsv"           # ts <TAB> phase <TAB> check <TAB> status <TAB> message
 REPORT_MD="$ARTIFACT_DIR/report.md"
 LOG_FILE="$ARTIFACT_DIR/run.log"
@@ -203,109 +209,7 @@ require_cmd() {
   for c in $missing; do
     printf '    %-8s %s\n' "$c" "$(install_hint "$c")" >&2
   done
-  printf '%s\n' "${C_DIM}Run './rec-recover.sh doctor' for a full environment check.${C_RESET}" >&2
   exit 2
-}
-
-# Picks python3, or python when it is a 3.x interpreter (Windows installers name it python).
-python_bin() {
-  local b
-  for b in python3 python; do
-    if command -v "$b" >/dev/null 2>&1 \
-       && "$b" -c 'import sys; sys.exit(0 if sys.version_info[0] == 3 else 1)' >/dev/null 2>&1; then
-      echo "$b"
-      return 0
-    fi
-  done
-  return 1
-}
-
-# run_doctor  - read-only environment check; works even when tools are missing
-run_doctor() {
-  set +e # probes are allowed to fail; we report instead of aborting
-  local rc=0 c v
-  _row() { # _row <status> <name> <detail>
-    local col sym
-    case "$1" in PASS) col="$C_GREEN" sym="$S_OK" ;; WARN) col="$C_ORANGE" sym="$S_WARN" ;; *) col="$C_RED" sym="$S_FAIL" ;; esac
-    printf '  %s%s %-4s%s  %-14s %s\n' "${col}${C_BOLD}" "$sym" "$1" "$C_RESET" "$2" "$3" >&2
-  }
-
-  printf '\n%s%s DOCTOR %s%s\n' "$C_BOLD" "${S_BAR}${S_BAR}${S_BAR}" "$(_repeat $(($(_cols) - 11)) "$S_BAR")" "$C_RESET" >&2
-  _row PASS os "$(os_name)  ($(uname -srm 2>/dev/null))"
-
-  if [ "${BASH_VERSINFO[0]}" -ge 3 ]; then _row PASS bash "$BASH_VERSION"
-  else _row FAIL bash "$BASH_VERSION (need 3.2+)"; rc=1; fi
-
-  for c in oc tar awk sed grep base64; do
-    if command -v "$c" >/dev/null 2>&1; then
-      case "$c" in
-        oc)  v="$(oc version --client 2>/dev/null | head -1 || true)" ;;
-        tar) v="$(tar --version 2>/dev/null | head -1 || true)" ;;
-        *)   v="$(command -v "$c")" ;;
-      esac
-      _row PASS "$c" "${v:-found}"
-    else
-      _row FAIL "$c" "missing  ->  $(install_hint "$c")"
-      rc=1
-    fi
-  done
-
-  if command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1; then
-    _row PASS sha256 "$(command -v sha256sum || command -v shasum)"
-  else _row FAIL sha256 "neither sha256sum nor shasum found"; rc=1; fi
-
-  if v="$(python_bin)"; then
-    _row PASS python "$v $("$v" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)  (optional: log collector needs 3.11+)"
-  else _row WARN python "not found (optional; only the diagnostics step uses it)"; fi
-
-  case "$(uname -s 2>/dev/null)" in
-    MINGW* | MSYS* | CYGWIN*)
-      if [ "${MSYS_NO_PATHCONV:-}" = "1" ]; then _row PASS msys-paths "path conversion disabled (MSYS_NO_PATHCONV=1)"
-      else _row WARN msys-paths "MSYS_NO_PATHCONV not set; pod paths may be rewritten"; fi ;;
-  esac
-
-  if command -v oc >/dev/null 2>&1; then
-    local server user
-    server="$(oc whoami --show-server 2>/dev/null || echo unknown)"
-    if user="$(oc whoami 2>/dev/null)"; then
-      _row PASS oc-login "$user @ $server"
-      local recs n
-      recs="$(_list_recs)"
-      [ -z "$recs" ] && recs="$(_list_recs "$(oc project -q 2>/dev/null || true)")"
-      n="$(printf '%s\n' "$recs" | sed '/^$/d' | wc -l | tr -d ' ')"
-      case "$n" in
-        0) _row WARN rec "no RedisEnterpriseCluster visible (check permissions or 'oc project')" ;;
-        1) _row PASS rec "$(printf '%s' "$recs" | awk -F'\t' '{print $1"/"$2"  state="$3"  nodes="$4}')" ;;
-        *) _row WARN rec "$n RECs visible; pass --ns/--rec or answer the prompt: $(printf '%s\n' "$recs" | awk -F'\t' '{printf " %s/%s", $1, $2}')" ;;
-      esac
-    else
-      _row FAIL oc-login "not logged in or session expired ($server)  ->  oc login"
-      rc=1
-    fi
-  fi
-
-  printf '%s%s%s\n' "$C_DIM" "$(_repeat "$(_cols)" "$S_BAR")" "$C_RESET" >&2
-  if [ "$rc" -eq 0 ]; then printf '  %s%s ready to run rec-recover.sh%s\n\n' "${C_GREEN}${C_BOLD}" "$S_OK" "$C_RESET" >&2
-  else printf '  %s%s fix the FAIL items above first%s\n\n' "${C_RED}${C_BOLD}" "$S_FAIL" "$C_RESET" >&2; fi
-  set -e
-  return $rc
-}
-
-# Portable sha256 (Linux: sha256sum, macOS: shasum -a 256)
-sha256_file() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | awk '{print $1}'
-  else
-    shasum -a 256 "$1" | awk '{print $1}'
-  fi
-}
-
-sha256_str() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    printf '%s' "$1" | sha256sum | awk '{print $1}'
-  else
-    printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
-  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -387,10 +291,10 @@ finalize_report() {
   printf '%s [INFO ] report written: %s\n' "$(_ts)" "$REPORT_MD" >>"$LOG_FILE"
 }
 
-# verdict_box <VERDICT> <TOKEN> <line...>  - coloured box for the precheck verdict
+# verdict_box <VERDICT> <line...>  - coloured box for the precheck verdict
 verdict_box() {
-  local verdict="$1" token="$2"
-  shift 2
+  local verdict="$1"
+  shift
 
   local col width
   case "$verdict" in
@@ -403,9 +307,6 @@ verdict_box() {
   {
     printf '\n%s%s%s\n' "$col" "$(_repeat "$width" "$S_BAR")" "$C_RESET"
     printf '  %sPRECHECK VERDICT%s   %s%s%s%s\n' "$C_BOLD" "$C_RESET" "$col" "$C_BOLD" "$verdict" "$C_RESET"
-    if [ -n "$token" ]; then
-      printf '  %sAPPROVAL TOKEN%s     %s%s%s\n' "$C_BOLD" "$C_RESET" "$C_BOLD" "$token" "$C_RESET"
-    fi
     printf '\n'
     local l
     for l in "$@"; do
@@ -413,7 +314,7 @@ verdict_box() {
     done
     printf '%s%s%s\n\n' "$col" "$(_repeat "$width" "$S_BAR")" "$C_RESET"
   } >&2
-  printf '%s [INFO ] VERDICT=%s TOKEN=%s\n' "$(_ts)" "$verdict" "$token" >>"$LOG_FILE"
+  printf '%s [INFO ] VERDICT=%s\n' "$(_ts)" "$verdict" >>"$LOG_FILE"
 }
 
 # -----------------------------------------------------------------------------
@@ -585,75 +486,49 @@ reachable_pods() {
 }
 
 # -----------------------------------------------------------------------------
-# Approval token
-#   token = first 12 hex chars of sha256("<REC uid>|<precheck run id>"),
-#   stored in STATE_FILE by precheck and verified by every mutating phase.
+# Confirmation gate (the only thing standing between you and a cluster change)
 # -----------------------------------------------------------------------------
 
-# compute_token <rec uid> <run id>
-compute_token() {
-  sha256_str "$1|$2" | cut -c1-12
-}
-
-# write_state <verdict> <token> [nodes] [version] [reaadb-count]
-write_state() {
-  local verdict="$1" token="$2" nodes="${3:-}" version="${4:-}" reaadb="${5:-}"
+# confirm <what> [line...]  - prints the lines, then requires the cluster name to be typed.
+# --yes (ASSUME_YES=true) skips the prompt. Without a terminal and without --yes, it dies.
+confirm() {
+  local what="$1"
+  shift
   {
-    echo "RUN_ID=$RUN_ID"
-    echo "TS=$(_ts)"
-    echo "EPOCH=$(date +%s)"
-    echo "NS=$NS"
-    echo "REC=$REC"
-    echo "VERDICT=$verdict"
-    echo "TOKEN=$token"
-    echo "NODES=$nodes"
-    echo "VERSION=$version"
-    echo "REAADB=$reaadb"
-  } >"$STATE_FILE"
+    printf '\n%s%s%s\n' "$C_ORANGE" "$(_repeat "$(_cols)" "$S_BAR")" "$C_RESET"
+    printf '  %s%sCONFIRMATION REQUIRED: %s%s\n' "$C_ORANGE" "$C_BOLD" "$what" "$C_RESET"
+    local l
+    for l in "$@"; do printf '  %s\n' "$l"; done
+    printf '%s%s%s\n' "$C_ORANGE" "$(_repeat "$(_cols)" "$S_BAR")" "$C_RESET"
+  } >&2
+  if [ "$ASSUME_YES" = "true" ]; then
+    log "confirmation skipped with --yes: $what"
+    return 0
+  fi
+  if [ ! -t 0 ]; then
+    die "$what needs a confirmation. Run from a terminal, or pass --yes for unattended runs."
+  fi
+  local answer
+  printf '  Type the cluster name (%s%s%s) to continue, anything else to abort: ' "$C_BOLD" "$REC" "$C_RESET" >&2
+  read -r answer
+  if [ "$answer" != "$REC" ]; then
+    die "aborted by user at confirmation: $what"
+  fi
+  log "confirmed by user: $what"
 }
 
-# state_get <KEY>  - read one value from the state file
-state_get() {
-  [ -f "$STATE_FILE" ] || return 1
-  sed -n "s/^$1=//p" "$STATE_FILE" | head -1
-}
-
-# require_approval <action label>  - dies unless --execute and a valid, unexpired token were given
-require_approval() {
-  local label="$1"
-
-  [ "$EXECUTE" = "true" ] \
-    || die "$label is a mutating action. Re-run with --execute --token <token> (token printed by 'precheck')."
-  [ -n "$TOKEN" ] \
-    || die "$label requires --token <token> from the latest precheck."
-  [ -f "$STATE_FILE" ] \
-    || die "no precheck state found at $STATE_FILE. Run 'precheck' first."
-
-  local s_token s_verdict s_epoch s_ns s_rec s_run now age
-  s_token="$(state_get TOKEN)"
-  s_verdict="$(state_get VERDICT)"
-  s_epoch="$(state_get EPOCH)"
-  s_ns="$(state_get NS)"
-  s_rec="$(state_get REC)"
-  s_run="$(state_get RUN_ID)"
-
-  if [ "$s_ns" != "$NS" ] || [ "$s_rec" != "$REC" ]; then
-    die "precheck state is for $s_ns/$s_rec, not $NS/$REC."
-  fi
-  [ "$TOKEN" = "$s_token" ] \
-    || die "token mismatch. Expected the token printed by precheck run $s_run."
-
-  now="$(date +%s)"
-  age=$((now - s_epoch))
-  [ "$age" -le "$TOKEN_TTL" ] \
-    || die "precheck is ${age}s old (> TOKEN_TTL=$TOKEN_TTL). Re-run precheck."
-  [ "$s_verdict" != "BLOCKED" ] \
-    || die "precheck verdict was BLOCKED. Resolve blocking findings and re-run precheck."
-  if [ "$s_verdict" = "RECOVERY_NOT_NEEDED" ] && [ "$FORCE" != "true" ]; then
-    die "precheck verdict was RECOVERY_NOT_NEEDED. Use --force only if you are certain quorum is lost."
-  fi
-
-  log "approval verified for $label (precheck run $s_run, verdict $s_verdict)"
+# ask_yes_no <question>  - returns 0 for yes, 1 for no. Dies without a terminal (callers handle --yes first).
+ask_yes_no() {
+  local answer
+  [ -t 0 ] || die "a decision is needed for: $1  (run from a terminal, or set AA_MODE / AA_DATA_BEARING / AA_CONFIG_ONLY in rec-recover.env and use --yes)"
+  while :; do
+    printf '  %s [y/n]: ' "$1" >&2
+    read -r answer
+    case "$answer" in
+      y | Y | yes | YES) return 0 ;;
+      n | N | no | NO)   return 1 ;;
+    esac
+  done
 }
 
 # -----------------------------------------------------------------------------
@@ -671,3 +546,24 @@ csv_contains() {
 }
 
 quorum_of() { echo $(($1 / 2 + 1)); }
+
+# human_size <bytes>  -> e.g. 1.5 GiB (integer maths only, bash 3.2 safe)
+human_size() {
+  local b="${1:-0}" unit=B
+  local units="KiB MiB GiB TiB"
+  local whole="$b" frac=0
+  for unit2 in $units; do
+    [ "$whole" -ge 1024 ] || break
+    frac=$(( (whole % 1024) * 10 / 1024 ))
+    whole=$((whole / 1024))
+    unit="$unit2"
+  done
+  if [ "$unit" = "B" ]; then printf '%d B' "$whole"; else printf '%d.%d %s' "$whole" "$frac" "$unit"; fi
+}
+
+# free_bytes <directory>  -> free space on the filesystem holding <directory>
+free_bytes() {
+  local kb
+  kb="$(df -Pk "$1" 2>/dev/null | awk 'NR == 2 { print $4 }')"
+  echo $(( ${kb:-0} * 1024 ))
+}

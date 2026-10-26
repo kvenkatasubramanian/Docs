@@ -106,6 +106,10 @@ continue.** To write the archives somewhere bigger, set `ARTIFACT_ROOT` in the s
 4. Patches `spec.clusterRecovery: true`. The operator recreates the pods on the existing volumes and restores
    the cluster configuration.
 5. Waits until the REC is `Running` and the operator has cleared the flag, then until every pod is Ready.
+   **While waiting**, every time a pod becomes reachable the script checks the preserved file there and
+   writes it back if it is missing or different. The operator's first-pod recovery needs
+   `trusted_ca.pem` in place and otherwise sits in `RecoveringFirstPod`; placing the file lets it
+   continue. No services are restarted at this point, because the operator is driving the rebuild.
 6. Checks `rladmin status`: every node `OK`, no running cluster actions.
 7. **Restores the saved files** on the master node's pod if the content changed or the file disappeared.
    The rebuilt version is kept as `<file>.after-rebuild` under the run's `preserved/` folder, the saved copy

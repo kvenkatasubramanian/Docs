@@ -96,7 +96,7 @@
 
     <text x="685" y="282" text-anchor="middle">1. save trusted_ca.pem from the master pod</text>
     <text x="685" y="298" text-anchor="middle">2. clusterRecovery: true</text>
-    <text x="685" y="314" text-anchor="middle">3. wait Running + flag cleared, pods Ready</text>
+    <text x="685" y="314" text-anchor="middle">3. wait Running; place the file into pods as they come up</text>
     <text x="685" y="330" text-anchor="middle">4. nodes OK, no running actions</text>
     <text x="685" y="346" text-anchor="middle">5. restore the file if changed/missing,</text>
     <text x="685" y="362" text-anchor="middle">    supervisorctl restart all, verify sync</text>

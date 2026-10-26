@@ -4,8 +4,10 @@
 #
 #   preserve_pod_files      save PRESERVE_FILES (e.g. /etc/opt/redislabs/trusted_ca.pem) from every
 #                           reachable pod before the rebuild
-#   phase_recover_cluster   patch spec.clusterRecovery=true, wait for Running AND
-#                           the flag being cleared by the operator, wait for pods  (MUTATING)
+#   phase_recover_cluster   patch spec.clusterRecovery=true, wait for Running AND the flag being
+#                           cleared by the operator, wait for pods (MUTATING). While waiting, puts the
+#                           preserved files into any pod that comes up, because the first-pod recovery
+#                           needs trusted_ca.pem and otherwise stalls in RecoveringFirstPod.
 #   phase_validate_cluster  rladmin status, all nodes OK, no running actions
 #   restore_pod_files       put the preserved files back where the rebuild changed them, then
 #                           `supervisorctl restart all` and verify the other nodes picked them up
@@ -235,6 +237,35 @@ switch_master() {
   fi
 }
 
+# _place_files_during_rebuild  - called on every poll while the REC is not yet Running.
+# The operator recovers the first pod with `rladmin cluster recover`, which needs trusted_ca.pem in
+# place; without it the REC sits in RecoveringFirstPod. So as soon as a pod can be exec'd, compare the
+# preserved file with what is there and write it back if missing or different. No service restart here:
+# the operator is driving the rebuild. Pods may be recreated several times, hence the re-check each poll.
+_place_files_during_rebuild() {
+  local P=recover-cluster pod f src saved_sha now_sha meta mode owner group
+  [ -n "$PRESERVE_FILES" ] && [ -d "$PRESERVE_DIR" ] || return 0
+  for pod in $(rec_pod_names); do
+    pod_exec "$pod" true >/dev/null 2>&1 || continue
+    for f in $PRESERVE_FILES; do
+      src="$(_saved_copy "$f")"
+      [ -s "$src" ] || continue
+      saved_sha="$(cat "$src.sha256" 2>/dev/null || true)"
+      now_sha="$(_pod_file_sha "$pod" "$f")"
+      [ -n "$saved_sha" ] && [ "$now_sha" = "$saved_sha" ] && continue
+      meta="$(cat "$src.meta" 2>/dev/null || echo "644 redislabs redislabs")"
+      mode="${meta%% *}"; owner="$(echo "$meta" | awk '{print $2}')"; group="$(echo "$meta" | awk '{print $3}')"
+      if pod_exec "$pod" sh -c 'mkdir -p "$(dirname "$0")" && cat >"$0" && chmod "$1" "$0" && chown "$2:$3" "$0"' \
+           "$f" "$mode" "$owner" "$group" <"$src" >>"$LOG_FILE" 2>&1; then
+        report_add $P "$pod$f" PASS \
+          "placed during the rebuild ($([ -z "$now_sha" ] && echo 'file was missing' || echo 'content differed')) so the operator can continue"
+      else
+        report_add $P "$pod$f" WARN "could not place $f on $pod during the rebuild (pod may be restarting); will retry on the next poll"
+      fi
+    done
+  done
+}
+
 # _wait_node_ok <pod>  - wait until rladmin status shows every node OK again (after a service restart)
 _wait_node_ok() {
   local deadline bad
@@ -315,6 +346,7 @@ phase_recover_cluster() {
     if [ "$state" = "Running" ] && [ "$flag" != "true" ]; then
       break
     fi
+    _place_files_during_rebuild
     if [ "$(date +%s)" -ge "$deadline" ]; then
       report_add $P rec-state FAIL \
         "timed out after ${TIMEOUT_REC}s; last state=$state flag=$flag; states seen:$seen"

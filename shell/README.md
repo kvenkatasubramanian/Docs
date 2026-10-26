@@ -28,6 +28,14 @@ application validation afterwards is yours: check keys, TLS, authentication and 
 ./rec-recover.sh all               # the four steps above in one go
 ```
 
+## Recovery flow at a glance
+
+![rec-recover.sh recovery flow](docs/recovery-flow.svg)
+
+Green is read-only, orange changes the cluster, grey is yours to do by hand. The diamonds are the points
+where the script stops and waits for you: the confirmation before the rebuild, the Active-Active question
+per database, and the confirmation before the databases are recovered.
+
 ## Assumptions
 
 The script only covers the situation it was written for. Check these before relying on it.

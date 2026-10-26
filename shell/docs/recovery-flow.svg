@@ -1,135 +1,137 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="470" viewBox="0 0 1500 470" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="560" viewBox="0 0 1500 560" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif">
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#4b5563"/>
     </marker>
   </defs>
 
-  <rect width="1500" height="470" fill="#ffffff"/>
+  <rect width="1500" height="560" fill="#ffffff"/>
   <text x="750" y="34" text-anchor="middle" font-size="20" font-weight="700" fill="#111827">rec-recover.sh — recovery flow</text>
+  <text x="750" y="54" text-anchor="middle" font-size="12.5" fill="#6b7280">target detected from your oc login · nothing changes until you type the cluster name at the confirmation prompt</text>
 
   <!-- regions -->
-  <rect x="20" y="60" width="550" height="340" rx="12" fill="#f0faf4" stroke="#30a46c" stroke-width="1.5"/>
-  <text x="295" y="86" text-anchor="middle" font-size="13" font-weight="700" fill="#1f7a4d" letter-spacing="1">READ-ONLY  ·  safe to run any time</text>
+  <rect x="20" y="74" width="440" height="420" rx="12" fill="#f0faf4" stroke="#30a46c" stroke-width="1.5"/>
+  <text x="240" y="100" text-anchor="middle" font-size="13" font-weight="700" fill="#1f7a4d" letter-spacing="1">READ-ONLY  ·  safe to run any time</text>
 
-  <rect x="640" y="60" width="620" height="340" rx="12" fill="#fff6ec" stroke="#ff8c1a" stroke-width="1.5"/>
-  <text x="950" y="86" text-anchor="middle" font-size="13" font-weight="700" fill="#b85c00" letter-spacing="1">CHANGES THE CLUSTER  ·  requires --execute --token</text>
+  <rect x="540" y="74" width="740" height="420" rx="12" fill="#fff6ec" stroke="#ff8c1a" stroke-width="1.5"/>
+  <text x="910" y="100" text-anchor="middle" font-size="13" font-weight="700" fill="#b85c00" letter-spacing="1">CHANGES THE CLUSTER  ·  after confirmation (or --yes)</text>
 
-  <rect x="1290" y="60" width="190" height="340" rx="12" fill="#f5f6f8" stroke="#9aa3b2" stroke-width="1.5" stroke-dasharray="6 4"/>
-  <text x="1385" y="86" text-anchor="middle" font-size="13" font-weight="700" fill="#4b5563" letter-spacing="1">MANUAL</text>
+  <rect x="1300" y="74" width="180" height="420" rx="12" fill="#f5f6f8" stroke="#9aa3b2" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="1390" y="100" text-anchor="middle" font-size="13" font-weight="700" fill="#4b5563" letter-spacing="1">MANUAL</text>
 
-  <!-- connectors (y = 185) -->
+  <!-- connectors (y = 200) -->
   <g stroke="#4b5563" stroke-width="2" fill="none" marker-end="url(#arrow)">
-    <line x1="190" y1="185" x2="218" y2="185"/>
-    <line x1="370" y1="185" x2="398" y2="185"/>
-    <line x1="550" y1="185" x2="566" y2="185"/>
-    <line x1="634" y1="185" x2="658" y2="185"/>
-    <line x1="810" y1="185" x2="828" y2="185"/>
-    <line x1="980" y1="185" x2="986" y2="185"/>
-    <line x1="1054" y1="185" x2="1078" y2="185"/>
-    <line x1="1230" y1="185" x2="1298" y2="185"/>
+    <line x1="210" y1="200" x2="248" y2="200"/>
+    <line x1="420" y1="200" x2="464" y2="200"/>
+    <line x1="534" y1="200" x2="568" y2="200"/>
+    <line x1="800" y1="200" x2="826" y2="200"/>
+    <line x1="894" y1="200" x2="918" y2="200"/>
+    <line x1="1130" y1="200" x2="1156" y2="200"/>
+    <line x1="1224" y1="200" x2="1308" y2="200"/>
   </g>
 
   <!-- read-only nodes -->
   <g font-size="14" text-anchor="middle">
-    <rect x="40" y="150" width="150" height="70" rx="10" fill="#ffffff" stroke="#30a46c" stroke-width="2"/>
-    <text x="115" y="180" font-weight="700" fill="#111827">precheck</text>
-    <text x="115" y="200" font-size="12" fill="#4b5563">verdict + token</text>
+    <rect x="40" y="165" width="170" height="70" rx="10" fill="#ffffff" stroke="#30a46c" stroke-width="2"/>
+    <text x="125" y="195" font-weight="700" fill="#111827">precheck</text>
+    <text x="125" y="215" font-size="12" fill="#4b5563">verdict</text>
 
-    <rect x="220" y="150" width="150" height="70" rx="10" fill="#ffffff" stroke="#30a46c" stroke-width="2"/>
-    <text x="295" y="180" font-weight="700" fill="#111827">diagnostics</text>
-    <text x="295" y="200" font-size="12" fill="#4b5563">log collector</text>
-
-    <rect x="400" y="150" width="150" height="70" rx="10" fill="#ffffff" stroke="#30a46c" stroke-width="2"/>
-    <text x="475" y="180" font-weight="700" fill="#111827">backup</text>
-    <text x="475" y="200" font-size="12" fill="#4b5563">CCS + DB files</text>
+    <rect x="250" y="165" width="170" height="70" rx="10" fill="#ffffff" stroke="#30a46c" stroke-width="2"/>
+    <text x="335" y="195" font-weight="700" fill="#111827">backup</text>
+    <text x="335" y="215" font-size="12" fill="#4b5563">size estimate, CCS + DB files</text>
   </g>
 
-  <!-- gate 1: approval token -->
-  <g transform="translate(600 185)">
+  <!-- gate 1: confirmation -->
+  <g transform="translate(500 200)">
     <polygon points="0,-34 34,0 0,34 -34,0" fill="#fff8d6" stroke="#d4a017" stroke-width="2"/>
-    <text x="0" y="-44" text-anchor="middle" font-size="12" font-weight="700" fill="#8a6500">approval</text>
-    <text x="0" y="52" text-anchor="middle" font-size="12" font-weight="700" fill="#8a6500">token</text>
+    <text x="0" y="-44" text-anchor="middle" font-size="12" font-weight="700" fill="#8a6500">confirm</text>
+    <text x="0" y="52" text-anchor="middle" font-size="12" font-weight="700" fill="#8a6500">type cluster name</text>
   </g>
 
   <!-- mutating nodes -->
   <g font-size="14" text-anchor="middle">
-    <rect x="660" y="150" width="150" height="70" rx="10" fill="#ffffff" stroke="#ff8c1a" stroke-width="2"/>
-    <text x="735" y="180" font-weight="700" fill="#111827">recover-cluster</text>
-    <text x="735" y="200" font-size="12" fill="#4b5563">patch REC, wait</text>
-
-    <rect x="830" y="150" width="150" height="70" rx="10" fill="#ffffff" stroke="#30a46c" stroke-width="2"/>
-    <text x="905" y="180" font-weight="700" fill="#111827">plan-db</text>
-    <text x="905" y="200" font-size="12" fill="#4b5563">classify (read-only)</text>
+    <rect x="570" y="165" width="230" height="70" rx="10" fill="#ffffff" stroke="#ff8c1a" stroke-width="2"/>
+    <text x="685" y="195" font-weight="700" fill="#111827">recover-cluster</text>
+    <text x="685" y="215" font-size="12" fill="#4b5563">precheck again → operator rebuild</text>
   </g>
 
-  <!-- gate 2: Active-Active decision -->
-  <g transform="translate(1020 185)">
+  <!-- gate 2: Active-Active question -->
+  <g transform="translate(860 200)">
     <polygon points="0,-34 34,0 0,34 -34,0" fill="#fff8d6" stroke="#d4a017" stroke-width="2"/>
     <text x="0" y="-44" text-anchor="middle" font-size="12" font-weight="700" fill="#8a6500">Active-Active</text>
-    <text x="0" y="52" text-anchor="middle" font-size="12" font-weight="700" fill="#8a6500">decision</text>
+    <text x="0" y="52" text-anchor="middle" font-size="12" font-weight="700" fill="#8a6500">peers live?</text>
   </g>
 
   <g font-size="14" text-anchor="middle">
-    <rect x="1080" y="150" width="150" height="70" rx="10" fill="#ffffff" stroke="#ff8c1a" stroke-width="2"/>
-    <text x="1155" y="180" font-weight="700" fill="#111827">recover-db</text>
-    <text x="1155" y="200" font-size="12" fill="#4b5563">one rladmin per DB</text>
+    <rect x="920" y="165" width="210" height="70" rx="10" fill="#ffffff" stroke="#ff8c1a" stroke-width="2"/>
+    <text x="1025" y="195" font-weight="700" fill="#111827">recover-db</text>
+    <text x="1025" y="215" font-size="12" fill="#4b5563">plan → confirm → one rladmin per DB</text>
 
-    <rect x="1300" y="150" width="170" height="70" rx="10" fill="#ffffff" stroke="#9aa3b2" stroke-width="2" stroke-dasharray="6 4"/>
-    <text x="1385" y="180" font-weight="700" fill="#111827">validate</text>
-    <text x="1385" y="200" font-size="12" fill="#4b5563">by you</text>
+    <rect x="1310" y="165" width="160" height="70" rx="10" fill="#ffffff" stroke="#9aa3b2" stroke-width="2" stroke-dasharray="6 4"/>
+    <text x="1390" y="195" font-weight="700" fill="#111827">validate</text>
+    <text x="1390" y="215" font-size="12" fill="#4b5563">by you</text>
+  </g>
+
+  <!-- gate 3 (inside recover-db): second confirmation -->
+  <g transform="translate(1190 200)">
+    <polygon points="0,-34 34,0 0,34 -34,0" fill="#fff8d6" stroke="#d4a017" stroke-width="2"/>
+    <text x="0" y="-44" text-anchor="middle" font-size="12" font-weight="700" fill="#8a6500">confirm</text>
+    <text x="0" y="52" text-anchor="middle" font-size="12" font-weight="700" fill="#8a6500">plan shown</text>
   </g>
 
   <!-- notes under nodes -->
   <g font-size="11.5" fill="#374151">
-    <text x="115" y="262" text-anchor="middle">REC, persistence, PVCs,</text>
-    <text x="115" y="278" text-anchor="middle">nodes, operator, pods,</text>
-    <text x="115" y="294" text-anchor="middle">rladmin, modules, REAADB</text>
-    <text x="115" y="318" text-anchor="middle" font-weight="700" fill="#1f7a4d">RECOVERY_NOT_NEEDED</text>
-    <text x="115" y="334" text-anchor="middle" font-weight="700" fill="#b85c00">RECOVERY_RECOMMENDED</text>
-    <text x="115" y="350" text-anchor="middle" font-weight="700" fill="#c0392b">BLOCKED</text>
+    <text x="125" y="282" text-anchor="middle">oc session, REC, persistence,</text>
+    <text x="125" y="298" text-anchor="middle">PVCs, nodes, operator, pods,</text>
+    <text x="125" y="314" text-anchor="middle">rladmin, modules, REAADB</text>
+    <text x="125" y="338" text-anchor="middle" font-weight="700" fill="#1f7a4d">RECOVERY_NOT_NEEDED</text>
+    <text x="125" y="354" text-anchor="middle" font-weight="700" fill="#b85c00">RECOVERY_RECOMMENDED</text>
+    <text x="125" y="370" text-anchor="middle" font-weight="700" fill="#c0392b">BLOCKED</text>
 
-    <text x="295" y="262" text-anchor="middle">log_collector.py -m all</text>
-    <text x="295" y="278" text-anchor="middle">best effort, never blocks</text>
-    <text x="295" y="294" text-anchor="middle">(needs Python ≥ 3.11)</text>
+    <text x="335" y="282" text-anchor="middle">required vs free space first</text>
+    <text x="335" y="298" text-anchor="middle">ccs/ccs-redis.rdb</text>
+    <text x="335" y="314" text-anchor="middle">persist/redis per pod</text>
+    <text x="335" y="330" text-anchor="middle">SHA256SUMS manifest</text>
+    <text x="335" y="354" text-anchor="middle" font-weight="700" fill="#b85c00">copy off the cluster</text>
 
-    <text x="475" y="262" text-anchor="middle">ccs/ccs-redis.rdb</text>
-    <text x="475" y="278" text-anchor="middle">persist/redis per pod</text>
-    <text x="475" y="294" text-anchor="middle">SHA256SUMS manifest</text>
-    <text x="475" y="318" text-anchor="middle" font-weight="700" fill="#b85c00">copy off the cluster</text>
+    <text x="685" y="282" text-anchor="middle">1. save trusted_ca.pem from the master pod</text>
+    <text x="685" y="298" text-anchor="middle">2. clusterRecovery: true</text>
+    <text x="685" y="314" text-anchor="middle">3. wait Running + flag cleared, pods Ready</text>
+    <text x="685" y="330" text-anchor="middle">4. nodes OK, no running actions</text>
+    <text x="685" y="346" text-anchor="middle">5. restore the file if changed/missing,</text>
+    <text x="685" y="362" text-anchor="middle">    supervisorctl restart all, verify sync</text>
+    <text x="685" y="378" text-anchor="middle">6. rladmin cluster master set &lt;other node&gt;</text>
 
-    <text x="735" y="262" text-anchor="middle">clusterRecovery: true</text>
-    <text x="735" y="278" text-anchor="middle">wait Running + flag cleared</text>
-    <text x="735" y="294" text-anchor="middle">pods Ready, nodes OK,</text>
-    <text x="735" y="310" text-anchor="middle">no running actions</text>
+    <text x="1025" y="282" text-anchor="middle">rladmin recover list</text>
+    <text x="1025" y="298" text-anchor="middle">standard vs Active-Active</text>
+    <text x="1025" y="314" text-anchor="middle">missing-files stops here</text>
+    <text x="1025" y="338" text-anchor="middle">1. data-bearing Active-Active</text>
+    <text x="1025" y="354" text-anchor="middle">2. standard databases</text>
+    <text x="1025" y="370" text-anchor="middle">3. config-only Active-Active</text>
+    <text x="1025" y="394" text-anchor="middle" font-weight="700" fill="#b85c00">never 'recover all'</text>
 
-    <text x="905" y="262" text-anchor="middle">rladmin recover list</text>
-    <text x="905" y="278" text-anchor="middle">standard vs CRDB</text>
-    <text x="905" y="294" text-anchor="middle">ready vs missing-files</text>
-    <text x="905" y="318" text-anchor="middle" font-weight="700" fill="#c0392b">UNDECIDED / BLOCKED stop here</text>
-
-    <text x="1155" y="262" text-anchor="middle">1. data-bearing CRDBs</text>
-    <text x="1155" y="278" text-anchor="middle">2. standard databases</text>
-    <text x="1155" y="294" text-anchor="middle">3. config-only CRDBs</text>
-    <text x="1155" y="318" text-anchor="middle" font-weight="700" fill="#b85c00">never 'recover all'</text>
-
-    <text x="1385" y="262" text-anchor="middle">rladmin status: active</text>
-    <text x="1385" y="278" text-anchor="middle">app connectivity</text>
-    <text x="1385" y="294" text-anchor="middle">TLS / auth</text>
-    <text x="1385" y="310" text-anchor="middle">CRDB peer sync</text>
+    <text x="1390" y="282" text-anchor="middle">keys / DBSIZE</text>
+    <text x="1390" y="298" text-anchor="middle">app connectivity</text>
+    <text x="1390" y="314" text-anchor="middle">TLS / auth</text>
+    <text x="1390" y="330" text-anchor="middle">Active-Active peer sync</text>
   </g>
 
   <!-- gate notes -->
   <g font-size="11.5" fill="#6b7280" text-anchor="middle">
-    <text x="600" y="262">from precheck</text>
-    <text x="600" y="278">valid 4 h</text>
-    <text x="1020" y="262">--aa-config-only</text>
-    <text x="1020" y="278">--aa-data-bearing</text>
+    <text x="500" y="282">verdict shown first</text>
+    <text x="500" y="298">healthy cluster →</text>
+    <text x="500" y="314">loud warning</text>
+    <text x="860" y="282">asked per database</text>
+    <text x="860" y="298">yes → config only</text>
+    <text x="860" y="314">no → with data</text>
+    <text x="860" y="330">(--yes: AA_MODE)</text>
+    <text x="1190" y="282">table of actions</text>
+    <text x="1190" y="298">per database</text>
   </g>
 
   <!-- footer -->
-  <text x="750" y="438" text-anchor="middle" font-size="12.5" fill="#4b5563">
-    <tspan font-weight="700">all</tspan> runs precheck → diagnostics → backup and stops at the approval token; with --execute --token it continues through recover-db.
+  <text x="750" y="524" text-anchor="middle" font-size="12.5" fill="#4b5563">
+    <tspan font-weight="700">all</tspan> = precheck → backup → confirm → recover-cluster → recover-db. Stops at the first failure. <tspan font-weight="700">--yes</tspan> skips the prompts for unattended runs.
   </text>
-  <text x="750" y="458" text-anchor="middle" font-size="12.5" fill="#4b5563">Every run writes artifacts/&lt;run-id&gt;/report.md. Nothing is deleted, no pod is force-deleted, the REC is never recreated.</text>
+  <text x="750" y="544" text-anchor="middle" font-size="12.5" fill="#4b5563">Every run writes artifacts/&lt;run-id&gt;/ (report.md, backups, preserved files). Nothing is deleted, no pod is force-deleted, the REC is never recreated.</text>
 </svg>

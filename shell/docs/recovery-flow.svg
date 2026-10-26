@@ -52,7 +52,7 @@
   <g font-size="14" text-anchor="middle">
     <rect x="570" y="165" width="230" height="70" rx="10" fill="#ffffff" stroke="#ff8c1a" stroke-width="2"/>
     <text x="685" y="195" font-weight="700" fill="#111827">recover-cluster</text>
-    <text x="685" y="215" font-size="12" fill="#4b5563">precheck again → operator rebuild</text>
+    <text x="685" y="215" font-size="12" fill="#4b5563">precheck again → certificate → operator rebuild</text>
   </g>
 
   <!-- gate 2: Active-Active question -->
@@ -94,13 +94,14 @@
     <text x="335" y="330" text-anchor="middle">SHA256SUMS manifest</text>
     <text x="335" y="354" text-anchor="middle" font-weight="700" fill="#b85c00">copy off the cluster</text>
 
-    <text x="685" y="282" text-anchor="middle">1. save trusted_ca.pem from the master pod</text>
-    <text x="685" y="298" text-anchor="middle">2. clusterRecovery: true</text>
-    <text x="685" y="314" text-anchor="middle">3. wait Running; place the file into pods as they come up</text>
-    <text x="685" y="330" text-anchor="middle">4. nodes OK, no running actions</text>
-    <text x="685" y="346" text-anchor="middle">5. restore the file if changed/missing,</text>
-    <text x="685" y="362" text-anchor="middle">    supervisorctl restart all, verify sync</text>
-    <text x="685" y="378" text-anchor="middle">6. rladmin cluster master set &lt;other node&gt;</text>
+    <text x="685" y="282" text-anchor="middle">1. O1_G2_Certificate.pem must be next to the script</text>
+    <text x="685" y="298" text-anchor="middle">2. append it to trusted_ca.pem on reachable pods</text>
+    <text x="685" y="314" text-anchor="middle">3. clusterRecovery: true</text>
+    <text x="685" y="330" text-anchor="middle">4. wait Running; append on pods as they come up</text>
+    <text x="685" y="346" text-anchor="middle">5. nodes OK, no running actions</text>
+    <text x="685" y="362" text-anchor="middle">6. all pods checked again; append where missing,</text>
+    <text x="685" y="378" text-anchor="middle">    supervisorctl restart all on those pods</text>
+    <text x="685" y="394" text-anchor="middle">7. rladmin cluster master set &lt;other node&gt;</text>
 
     <text x="1025" y="282" text-anchor="middle">rladmin recover list</text>
     <text x="1025" y="298" text-anchor="middle">standard vs Active-Active</text>
@@ -133,5 +134,5 @@
   <text x="750" y="524" text-anchor="middle" font-size="12.5" fill="#4b5563">
     <tspan font-weight="700">all</tspan> = precheck → backup → confirm → recover-cluster → recover-db. Stops at the first failure. <tspan font-weight="700">--yes</tspan> skips the prompts for unattended runs.
   </text>
-  <text x="750" y="544" text-anchor="middle" font-size="12.5" fill="#4b5563">Every run writes artifacts/&lt;run-id&gt;/ (report.md, backups, preserved files). Nothing is deleted, no pod is force-deleted, the REC is never recreated.</text>
+  <text x="750" y="544" text-anchor="middle" font-size="12.5" fill="#4b5563">Every run writes artifacts/&lt;run-id&gt;/ (report.md, backups, trusted_ca before/after copies). Nothing is deleted, no pod is force-deleted, the REC is never recreated.</text>
 </svg>

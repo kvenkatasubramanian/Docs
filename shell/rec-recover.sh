@@ -14,6 +14,9 @@
 # Target cluster is detected from your `oc login` session. Nothing changes on the
 # cluster until you type the cluster name at the confirmation prompt (or pass --yes).
 # Requires on the workstation: bash >= 3.2, oc (logged in), tar, awk, sed, grep, base64.
+# recover-cluster and all also require the customer CA certificate O1_G2_Certificate.pem in the
+# current directory or next to this script; it is appended to /etc/opt/redislabs/trusted_ca.pem in
+# every pod. Both commands stop at once if the file is missing.
 # =============================================================================
 set -euo pipefail
 
@@ -45,6 +48,8 @@ Commands:
   precheck          Check the cluster and print a verdict. Read-only.
   backup            Archive the cluster configuration (CCS) and database files from every reachable pod.
   recover-cluster   Re-run the precheck, ask for confirmation, then let the operator rebuild the cluster.
+                    Appends O1_G2_Certificate.pem (from the current directory or next to the script) to
+                    /etc/opt/redislabs/trusted_ca.pem in every pod before, during and after the rebuild.
   recover-db        Recover every database that is in recovery state: standard databases with their data,
                     Active-Active databases with data or configuration-only (you are asked per database).
   all               precheck -> backup -> confirmation -> recover-cluster -> recover-db
@@ -97,6 +102,9 @@ require_cmd oc tar awk sed grep base64
 init_artifacts
 check_login      # dies if there is no oc session or it has expired
 discover_target  # fills NS/REC from the cluster unless pinned in rec-recover.env
+case "$SUBCMD" in
+  recover-cluster | all) require_ca_cert_file ;;   # dies if O1_G2_Certificate.pem is not on the workstation
+esac
 
 printf '%s\n' "${C_BOLD}Redis Enterprise cluster recovery${C_RESET}  \
 ${C_DIM}command=${C_RESET}${C_BOLD}$SUBCMD${C_RESET}  \

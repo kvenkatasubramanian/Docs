@@ -31,12 +31,13 @@ POLL_INTERVAL="${POLL_INTERVAL:-15}"
 # Backup
 BACKUP_MAX_BYTES="${BACKUP_MAX_BYTES:-21474836480}" # skip per-pod DB archive above 20 GiB
 
-# Files the operator rebuild is known to overwrite; saved from each pod before the rebuild and
-# restored afterwards (only where the content changed), then Redis Enterprise services are restarted
-# node by node. Space-separated absolute paths inside the Redis Enterprise container.
-PRESERVE_FILES="${PRESERVE_FILES:-/etc/opt/redislabs/trusted_ca.pem}"
-PRESERVE_SCOPE="${PRESERVE_SCOPE:-master}"               # master: save from / restore to the master node only (cluster syncs the rest) | all: every pod
-RESTART_AFTER_RESTORE="${RESTART_AFTER_RESTORE:-true}"   # supervisorctl restart all after restoring a file
+# Customer CA certificate. recover-cluster and all require this file on the workstation (looked up in the
+# current directory, then next to rec-recover.sh). Its content is appended to TRUSTED_CA_PATH in every pod
+# before the rebuild, while pods come up during the rebuild, and again after the rebuild, wherever the
+# certificate is not already present. The operator's first-pod recovery needs the certificate there.
+CA_CERT_FILE="${CA_CERT_FILE:-O1_G2_Certificate.pem}"
+TRUSTED_CA_PATH="${TRUSTED_CA_PATH:-/etc/opt/redislabs/trusted_ca.pem}"
+RESTART_AFTER_RESTORE="${RESTART_AFTER_RESTORE:-true}"   # supervisorctl restart all on pods where the certificate was appended after the rebuild
 SWITCH_MASTER="${SWITCH_MASTER:-true}"                   # after recovery, move the cluster master to another node (rladmin cluster master set)
 NEW_MASTER_NODE="${NEW_MASTER_NODE:-}"                   # node id to promote; empty = lowest healthy node id that is not the current master
 
@@ -463,6 +464,14 @@ pod_exec() {
   local pod="$1"
   shift
   ocn exec "$pod" -c "$REDIS_CONTAINER" --request-timeout=60s -- "$@"
+}
+
+# pod_exec_stdin <pod> <command...>  - same, forwarding our stdin to the command (oc exec -i);
+# used to send file content into the pod.
+pod_exec_stdin() {
+  local pod="$1"
+  shift
+  ocn exec -i "$pod" -c "$REDIS_CONTAINER" --request-timeout=60s -- "$@"
 }
 
 # Sets REACHABLE_POD to the first pod where exec works; returns 1 if none.

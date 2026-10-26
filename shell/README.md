@@ -100,25 +100,31 @@ continue.** To write the archives somewhere bigger, set `ARTIFACT_ROOT` in the s
 1. Re-runs the precheck. `BLOCKED` stops here.
 2. Shows the verdict and asks you to **type the cluster name**. A `RECOVERY_NOT_NEEDED` verdict adds a loud
    warning first.
-3. **Saves files the rebuild is known to overwrite** from the master node's pod, after checking they exist.
-   By default that is `/etc/opt/redislabs/trusted_ca.pem`; add more with `PRESERVE_FILES`. (Set
-   `PRESERVE_SCOPE=all` to save from every pod instead.)
+3. **Completes `trusted_ca.pem` with the customer CA certificate.** On every reachable pod the script checks
+   that `/etc/opt/redislabs/trusted_ca.pem` exists and, unless the certificate is already in it, appends the
+   content of `O1_G2_Certificate.pem` at the bottom, keeping the file's owner and mode. A reachable pod
+   without `trusted_ca.pem` stops the command here, before anything is changed. Pods that cannot be reached
+   (normal when quorum is lost) are handled in the next steps.
 4. Patches `spec.clusterRecovery: true`. The operator recreates the pods on the existing volumes and restores
    the cluster configuration.
 5. Waits until the REC is `Running` and the operator has cleared the flag, then until every pod is Ready.
-   **While waiting**, every time a pod becomes reachable the script checks the preserved file there and
-   writes it back if it is missing or different. The operator's first-pod recovery needs
-   `trusted_ca.pem` in place and otherwise sits in `RecoveringFirstPod`; placing the file lets it
-   continue. No services are restarted at this point, because the operator is driving the rebuild.
+   **While waiting**, every time a pod becomes reachable and has a `trusted_ca.pem`, the certificate is
+   appended there too if the rebuild produced the file without it. The operator's first-pod recovery needs
+   the certificate and otherwise sits in `RecoveringFirstPod`. No services are restarted at this point,
+   because the operator is driving the rebuild.
 6. Checks `rladmin status`: every node `OK`, no running cluster actions.
-7. **Restores the saved files** on the master node's pod if the content changed or the file disappeared.
-   The rebuilt version is kept as `<file>.after-rebuild` under the run's `preserved/` folder, the saved copy
-   is written back with its original owner and mode, and `supervisorctl restart all` runs on that node. The
-   script then waits for the other pods to carry the same file and reports whether they do. Nothing is
-   restarted if the file came through intact.
+7. **Checks every pod again.** All pods must be reachable and have `trusted_ca.pem`; the certificate is
+   appended wherever it is still missing, and `supervisorctl restart all` runs on those pods only, one at a
+   time. Nothing is restarted on pods that already carry it. The file as it was before and after each append
+   is kept under the run's `trusted_ca/` folder.
 8. **Moves the cluster master to another node** with `rladmin cluster master set <id>`: the lowest healthy
    node that is not the current master, or `NEW_MASTER_NODE` from the settings file. Turn off with
    `SWITCH_MASTER=false`.
+
+`recover-cluster` and `all` look for `O1_G2_Certificate.pem` in the current directory, then next to the
+script, **before anything else runs**, and stop with a clear message if it is not there. `precheck`,
+`backup` and `recover-db` do not need it. A different file name or path goes in `CA_CERT_FILE` in the
+settings file.
 
 ### `recover-db`  (changes the cluster)
 
@@ -161,8 +167,8 @@ need different treatment.
 ## Settings file
 
 Optional. Copy `rec-recover.env.example` to `rec-recover.env` next to the script. It documents every
-setting: pinning a cluster, the files to preserve across the rebuild and where to restore them, the master
-switch after recovery, where to write backups, timeouts for very large databases, and the Active-Active
+setting: pinning a cluster, the customer CA certificate file and the `trusted_ca.pem` path in the pods, the
+master switch after recovery, where to write backups, timeouts for very large databases, and the Active-Active
 defaults for unattended runs.
 
 ## Output
@@ -170,7 +176,8 @@ defaults for unattended runs.
 Colour-coded status lines (green PASS, orange WARN, red FAIL), a banner per phase, a verdict box and a
 summary footer. Colour turns off when output is not a terminal or with `NO_COLOR=1`. Each run writes
 `artifacts/<run>/` with `report.md`, `report.tsv`, `run.log`, raw `rladmin` output, `rec-spec.yaml` (a copy
-of the REC for manual recreation), the preserved files, the database plan and the backup archives.
+of the REC for manual recreation), `trusted_ca/` with each pod's `trusted_ca.pem` before and after the
+certificate was appended, the database plan and the backup archives.
 
 ## Safety rules
 

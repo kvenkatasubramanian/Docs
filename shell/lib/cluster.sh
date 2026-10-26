@@ -2,198 +2,165 @@
 # =============================================================================
 # cluster.sh - runbook steps 6, 7 and 8
 #
-#   preserve_pod_files      save PRESERVE_FILES (e.g. /etc/opt/redislabs/trusted_ca.pem) from every
-#                           reachable pod before the rebuild
+#   require_ca_cert_file    recover-cluster / all: the customer CA certificate (O1_G2_Certificate.pem) must be
+#                           on the workstation before anything runs
+#   ensure_trusted_ca       check /etc/opt/redislabs/trusted_ca.pem exists in the pods and append the
+#                           certificate where it is not already present; used before the patch, on every
+#                           poll while the REC rebuilds (the first-pod recovery needs the certificate and
+#                           otherwise sits in RecoveringFirstPod), and once more after the rebuild
 #   phase_recover_cluster   patch spec.clusterRecovery=true, wait for Running AND the flag being
-#                           cleared by the operator, wait for pods (MUTATING). While waiting, puts the
-#                           preserved files into any pod that comes up, because the first-pod recovery
-#                           needs trusted_ca.pem and otherwise stalls in RecoveringFirstPod.
+#                           cleared by the operator, wait for pods (MUTATING)
 #   phase_validate_cluster  rladmin status, all nodes OK, no running actions
-#   restore_pod_files       put the preserved files back where the rebuild changed them, then
-#                           `supervisorctl restart all` and verify the other nodes picked them up
+#   restart_changed_pods    supervisorctl restart all on the pods where the certificate was appended after
+#                           the rebuild
 #   switch_master           rladmin cluster master set <another node>
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# Files that the rebuild overwrites (default: /etc/opt/redislabs/trusted_ca.pem)
+# Customer CA certificate -> appended to TRUSTED_CA_PATH in every pod
 # -----------------------------------------------------------------------------
-PRESERVE_DIR="${PRESERVE_DIR:-$ARTIFACT_DIR/preserved}"
+TRUSTED_CA_DIR="${TRUSTED_CA_DIR:-$ARTIFACT_DIR/trusted_ca}"
+CA_CERT_PATH=""              # resolved by require_ca_cert_file
+CA_CERT_BODY=""              # the certificate with CR/LF removed; used for the "already present" test
+TRUSTED_CA_CHANGED_PODS=""   # pods where the certificate was appended after the rebuild (to restart)
+TRUSTED_CA_MISSING_PODS=""   # pods still without trusted_ca.pem during the rebuild (for the timeout message)
 
 # _pod_file_exists <pod> <path>
 _pod_file_exists() {
   pod_exec "$1" sh -c 'test -f "$0"' "$2" >/dev/null 2>&1
 }
 
-# _pod_file_sha <pod> <path>  -> sha256 of the file inside the pod, empty if missing
-_pod_file_sha() {
-  pod_exec "$1" sh -c 'test -f "$0" && sha256sum "$0" | cut -d" " -f1' "$2" 2>/dev/null || true
+# require_ca_cert_file  - find CA_CERT_FILE in the current directory, then next to the script. Dies if absent.
+require_ca_cert_file() {
+  local f="$CA_CERT_FILE" candidate
+  case "$f" in
+    /*) [ -f "$f" ] && CA_CERT_PATH="$f" ;;
+    *)
+      for candidate in "$PWD/$f" "$SCRIPT_ROOT/$f"; do
+        if [ -f "$candidate" ]; then CA_CERT_PATH="$candidate"; break; fi
+      done ;;
+  esac
+  if [ -z "$CA_CERT_PATH" ]; then
+    die "$f not found in $PWD or next to the script in $SCRIPT_ROOT. recover-cluster and all need the customer CA certificate to complete $TRUSTED_CA_PATH in the pods. Place the file there and retry."
+  fi
+  if ! grep -q -- '-----BEGIN CERTIFICATE-----' "$CA_CERT_PATH"; then
+    die "$CA_CERT_PATH does not look like a PEM certificate (no BEGIN CERTIFICATE line)."
+  fi
+  mkdir -p "$TRUSTED_CA_DIR"
+  CA_CERT_BODY="$TRUSTED_CA_DIR/cert.body"
+  tr -d '\r\n' <"$CA_CERT_PATH" >"$CA_CERT_BODY"
+  log "customer CA certificate: $CA_CERT_PATH ($(wc -c <"$CA_CERT_PATH" | tr -d ' ') bytes); appended to $TRUSTED_CA_PATH in every pod where it is not already present"
 }
 
-# _preserve_targets  -> pods to save from / restore to, according to PRESERVE_SCOPE
-#   master: the current master pod (falls back to the first reachable pod when the cluster cannot say)
-#   all:    every reachable pod
-_preserve_targets() {
-  local m
-  if [ "$PRESERVE_SCOPE" = "all" ]; then
-    reachable_pods
-    return
-  fi
-  RL_POD=""
-  m="$(master_pod 2>/dev/null || true)"
-  if [ -n "$m" ]; then
-    echo "$m"
-  else
-    reachable_pods | head -1
-  fi
+# _pod_has_cert <pod>  -> 0 if the pod's trusted_ca.pem already contains the certificate (line endings ignored)
+_pod_has_cert() {
+  pod_exec_stdin "$1" sh -c 'body=$(cat); test -f "$0" && tr -d "\r\n" <"$0" | grep -qF -- "$body"' \
+    "$TRUSTED_CA_PATH" <"$CA_CERT_BODY" >/dev/null 2>&1
 }
 
-# preserve_pod_files  - for every PRESERVE_FILES entry on the target pod(s):
-#   1. check whether the file exists; 2. if it does, save it (content, owner, group, mode, checksum)
-#   to $PRESERVE_DIR/<pod>/<path>. Files that do not exist are noted and skipped.
-preserve_pod_files() {
-  local P=preserve
-  [ -n "$PRESERVE_FILES" ] || return 0
-  local pods pod f dest meta n=0
-  pods="$(_preserve_targets)"
-  if [ -z "$pods" ]; then
-    report_add $P targets WARN "no reachable pod to preserve files from"
+# _append_cert_to_pod <pod> <phase-label> <mode>
+#   Keeps a copy of the file as it was (trusted_ca/<pod>.before.<mode>), appends the certificate at the
+#   bottom (adding a newline first if the file lacks one), keeps owner and mode, verifies the result.
+_append_cert_to_pod() {
+  local pod="$1" P="$2" mode="$3" meta fmode owner group
+  pod_exec "$pod" sh -c 'cat "$0"' "$TRUSTED_CA_PATH" >"$TRUSTED_CA_DIR/$pod.before.$mode" 2>/dev/null || true
+  meta="$(pod_exec "$pod" sh -c 'stat -c "%a %U %G" "$0"' "$TRUSTED_CA_PATH" 2>/dev/null || echo "644 redislabs redislabs")"
+  fmode="${meta%% *}"; owner="$(echo "$meta" | awk '{print $2}')"; group="$(echo "$meta" | awk '{print $3}')"
+  if pod_exec_stdin "$pod" sh -c '[ -z "$(tail -c1 "$0")" ] || echo >>"$0"; cat >>"$0" && { [ -z "$(tail -c1 "$0")" ] || echo >>"$0"; } && chmod "$1" "$0" && chown "$2:$3" "$0"' \
+       "$TRUSTED_CA_PATH" "$fmode" "$owner" "$group" <"$CA_CERT_PATH" >>"$LOG_FILE" 2>&1 \
+     && _pod_has_cert "$pod"; then
+    pod_exec "$pod" sh -c 'cat "$0"' "$TRUSTED_CA_PATH" >"$TRUSTED_CA_DIR/$pod.after.$mode" 2>/dev/null || true
+    case "$mode" in
+      during) report_add "$P" "$pod" PASS "$(basename "$CA_CERT_PATH") appended to $TRUSTED_CA_PATH during the rebuild so the operator can continue" ;;
+      *)      report_add "$P" "$pod" PASS "$(basename "$CA_CERT_PATH") appended to $TRUSTED_CA_PATH" ;;
+    esac
+    TRUSTED_CA_CHANGED_PODS="$TRUSTED_CA_CHANGED_PODS $pod"
     return 0
   fi
-  if [ "$PRESERVE_SCOPE" = "all" ]; then
-    report_add $P targets INFO "scope=all: saving from $(echo "$pods" | tr '\n' ' ')"
-  elif [ -n "$(rl_master_node_id 2>/dev/null)" ]; then
-    report_add $P targets INFO "scope=master: saving from the master node's pod $pods"
+  if [ "$mode" = during ]; then
+    report_add "$P" "$pod" WARN "could not append the certificate on $pod during the rebuild (pod may be restarting); retrying on the next poll"
   else
-    report_add $P targets WARN "scope=master but the cluster cannot report its master (expected when quorum is lost); saving from $pods"
+    report_add "$P" "$pod" FAIL "could not append the certificate to $TRUSTED_CA_PATH on $pod (see $LOG_FILE)"
   fi
-
-  for pod in $pods; do
-    for f in $PRESERVE_FILES; do
-      dest="$PRESERVE_DIR/$pod$f"
-      if ! _pod_file_exists "$pod" "$f"; then
-        report_add $P "$pod$f" INFO "does not exist on $pod before the rebuild; nothing to preserve"
-        continue
-      fi
-      mkdir -p "$(dirname "$dest")"
-      if pod_exec "$pod" sh -c 'cat "$0"' "$f" >"$dest" 2>/dev/null && [ -s "$dest" ]; then
-        meta="$(pod_exec "$pod" sh -c 'stat -c "%a %U %G" "$0"' "$f" 2>/dev/null || echo "644 redislabs redislabs")"
-        printf '%s\n' "$meta" >"$dest.meta"
-        _pod_file_sha "$pod" "$f" >"$dest.sha256"
-        n=$((n + 1))
-        report_add $P "$pod$f" PASS "exists; saved ($(wc -c <"$dest" | tr -d ' ') bytes, $meta)"
-      else
-        rm -f "$dest"
-        report_add $P "$pod$f" WARN "exists on $pod but could not be read; it will not be restored"
-      fi
-    done
-  done
-  [ "$n" -gt 0 ] && report_add $P summary INFO "$n file(s) saved under $PRESERVE_DIR"
-  return 0
+  return 1
 }
 
-# _saved_copy <file>  -> path of any saved copy of <file> (whichever pod it came from), empty if none
-_saved_copy() {
-  ls "$PRESERVE_DIR"/*"$1" 2>/dev/null | grep -v '\.after-rebuild$' | head -1 || true
-}
+# ensure_trusted_ca <pre|during|post>  - for every pod of the REC:
+#   pod unreachable          pre: INFO (expected when quorum is lost)  during: skip  post: FAIL
+#   trusted_ca.pem missing   pre/post: FAIL (nothing to append to; the script stops)  during: skip, retry next poll
+#   certificate present      PASS (pre/post), silent (during)
+#   otherwise                append the certificate
+# Returns 1 when anything failed in pre/post. During the rebuild nothing is fatal.
+ensure_trusted_ca() {
+  local mode="$1" P pod rc=0 appended=0 present=0
+  case "$mode" in
+    pre)    P=trusted-ca-before ;;
+    during) P=recover-cluster ;;
+    post)   P=trusted-ca-after ;;
+  esac
+  TRUSTED_CA_MISSING_PODS=""
+  [ "$mode" = post ] && TRUSTED_CA_CHANGED_PODS=""
 
-# restore_pod_files  - after the rebuild, for every preserved file on the target pod(s):
-#   1. check whether the file exists now and compare it with the saved copy
-#   2. exists and identical  -> leave it alone
-#      exists but different  -> keep the rebuilt version as <path>.after-rebuild, write the saved copy back
-#      missing               -> write the saved copy back
-#   3. supervisorctl restart all on each node where something was written (one node at a time)
-#   4. scope=master: wait for the other pods to pick the file up and report whether they did
-restore_pod_files() {
-  local P=restore
-  [ -n "$PRESERVE_FILES" ] || return 0
-  [ -d "$PRESERVE_DIR" ] || { report_add $P skip INFO "nothing was preserved before the rebuild"; return 0; }
-
-  local pods pod f src meta mode owner group now_sha saved_sha changed restored_any=0 reason
-  RL_POD=""
-  pods="$(_preserve_targets)"
-  [ "$PRESERVE_SCOPE" = "all" ] || report_add $P targets INFO "scope=master: restoring on the current master pod $pods; other nodes sync from it"
-
-  for pod in $pods; do
-    changed=0
-    for f in $PRESERVE_FILES; do
-      src="$(_saved_copy "$f")"
-      if [ ! -s "$src" ]; then
-        report_add $P "$pod$f" INFO "did not exist before the rebuild; not created"
-        continue
-      fi
-
-      if _pod_file_exists "$pod" "$f"; then
-        now_sha="$(_pod_file_sha "$pod" "$f")"
-        saved_sha="$(cat "$src.sha256" 2>/dev/null || true)"
-        if [ -n "$saved_sha" ] && [ "$now_sha" = "$saved_sha" ]; then
-          report_add $P "$pod$f" PASS "exists and is unchanged by the rebuild"
-          continue
-        fi
-        reason="exists but the content changed; rebuilt version kept as $(basename "$f").after-rebuild"
-        mkdir -p "$PRESERVE_DIR/$pod$(dirname "$f")"
-        pod_exec "$pod" sh -c 'cat "$0"' "$f" >"$PRESERVE_DIR/$pod$f.after-rebuild" 2>/dev/null || true
-      else
-        reason="missing after the rebuild"
-      fi
-
-      meta="$(cat "$src.meta" 2>/dev/null || echo "644 redislabs redislabs")"
-      mode="${meta%% *}"; owner="$(echo "$meta" | awk '{print $2}')"; group="$(echo "$meta" | awk '{print $3}')"
-      if pod_exec "$pod" sh -c 'mkdir -p "$(dirname "$0")" && cat >"$0" && chmod "$1" "$0" && chown "$2:$3" "$0"' \
-           "$f" "$mode" "$owner" "$group" <"$src" >>"$LOG_FILE" 2>&1; then
-        report_add $P "$pod$f" PASS "restored on $pod ($reason)"
-        changed=1
-      else
-        report_add $P "$pod$f" FAIL "could not write $f on $pod (see $LOG_FILE)"
-      fi
-    done
-
-    if [ "$changed" -eq 1 ] && [ "$RESTART_AFTER_RESTORE" = "true" ]; then
-      restored_any=1
-      log "restarting Redis Enterprise services on $pod (supervisorctl restart all)"
-      if pod_exec "$pod" supervisorctl restart all >>"$LOG_FILE" 2>&1; then
-        _wait_node_ok "$pod" \
-          && report_add $P "$pod-restart" PASS "services restarted, node OK" \
-          || report_add $P "$pod-restart" WARN "services restarted but node not OK within ${TIMEOUT_POD}s; check rladmin status"
-      else
-        report_add $P "$pod-restart" FAIL "supervisorctl restart all failed on $pod"
-      fi
+  for pod in $(rec_pod_names); do
+    if ! pod_exec "$pod" true >/dev/null 2>&1; then
+      case "$mode" in
+        pre)  report_add $P "$pod" INFO "not reachable before the rebuild (expected when quorum is lost); the certificate is appended when the pod comes up" ;;
+        post) report_add $P "$pod" FAIL "not reachable after the rebuild"; rc=1 ;;
+      esac
+      continue
     fi
-  done
-
-  if [ "$restored_any" -eq 0 ]; then
-    report_add $P summary INFO "no restart needed; preserved files were intact after the rebuild"
-  elif [ "$PRESERVE_SCOPE" != "all" ]; then
-    _verify_file_sync "$pods"
-  fi
-  return 0
-}
-
-# _verify_file_sync <master pod>  - wait until every other pod has the same file content as the saved copy
-_verify_file_sync() {
-  local P=restore master="$1" f src saved_sha deadline pod pending
-  for f in $PRESERVE_FILES; do
-    src="$(_saved_copy "$f")"
-    [ -s "$src" ] || continue
-    saved_sha="$(cat "$src.sha256" 2>/dev/null || true)"
-    [ -n "$saved_sha" ] || continue
-    deadline=$(($(date +%s) + TIMEOUT_POD))
-    while :; do
-      pending=""
-      for pod in $(rec_pod_names); do
-        [ "$pod" = "$master" ] && continue
-        [ "$(_pod_file_sha "$pod" "$f")" = "$saved_sha" ] || pending="$pending $pod"
-      done
-      [ -z "$pending" ] && break
-      [ "$(date +%s)" -lt "$deadline" ] || break
-      sleep "$POLL_INTERVAL"
-    done
-    if [ -z "$pending" ]; then
-      report_add $P "sync$f" PASS "all pods now carry the preserved $f"
+    if ! _pod_file_exists "$pod" "$TRUSTED_CA_PATH"; then
+      if [ "$mode" = during ]; then
+        TRUSTED_CA_MISSING_PODS="$TRUSTED_CA_MISSING_PODS $pod"
+      else
+        report_add $P "$pod" FAIL "$TRUSTED_CA_PATH is missing on $pod; there is nothing to append the certificate to. Restore the file in the pod and re-run."
+        rc=1
+      fi
+      continue
+    fi
+    if _pod_has_cert "$pod"; then
+      [ "$mode" = during ] || report_add $P "$pod" PASS "$TRUSTED_CA_PATH already contains the certificate"
+      present=$((present + 1))
+      continue
+    fi
+    if _append_cert_to_pod "$pod" "$P" "$mode"; then
+      appended=$((appended + 1))
     else
-      report_add $P "sync$f" WARN \
-        "$f did not reach:$pending within ${TIMEOUT_POD}s. If it should be identical on every node, re-run with PRESERVE_SCOPE=all in rec-recover.env."
+      [ "$mode" = during ] || rc=1
     fi
   done
+
+  if [ "$mode" != during ]; then
+    report_add $P summary INFO "certificate appended on $appended pod(s), already present on $present; copies under $TRUSTED_CA_DIR"
+  fi
+  return $rc
+}
+
+# restart_changed_pods  - supervisorctl restart all on each pod where the certificate was appended after the
+# rebuild, one pod at a time, waiting for every node to be OK again before the next one.
+restart_changed_pods() {
+  local P=trusted-ca-after pod
+  if [ -z "$TRUSTED_CA_CHANGED_PODS" ]; then
+    report_add $P restart INFO "no restart needed; every pod already carried the certificate"
+    return 0
+  fi
+  if [ "$RESTART_AFTER_RESTORE" != "true" ]; then
+    report_add $P restart WARN "RESTART_AFTER_RESTORE=false; services not restarted on:$TRUSTED_CA_CHANGED_PODS. The new certificate is picked up at the next restart."
+    return 0
+  fi
+  for pod in $TRUSTED_CA_CHANGED_PODS; do
+    log "restarting Redis Enterprise services on $pod (supervisorctl restart all)"
+    if pod_exec "$pod" supervisorctl restart all >>"$LOG_FILE" 2>&1; then
+      if _wait_node_ok "$pod"; then
+        report_add $P "$pod-restart" PASS "services restarted, all nodes OK"
+      else
+        report_add $P "$pod-restart" WARN "services restarted but nodes not all OK within ${TIMEOUT_POD}s; check rladmin status"
+      fi
+    else
+      report_add $P "$pod-restart" FAIL "supervisorctl restart all failed on $pod"
+    fi
+  done
+  return 0
 }
 
 # switch_master  - move the cluster master away from the current node (rladmin cluster master set <id>)
@@ -237,35 +204,6 @@ switch_master() {
   fi
 }
 
-# _place_files_during_rebuild  - called on every poll while the REC is not yet Running.
-# The operator recovers the first pod with `rladmin cluster recover`, which needs trusted_ca.pem in
-# place; without it the REC sits in RecoveringFirstPod. So as soon as a pod can be exec'd, compare the
-# preserved file with what is there and write it back if missing or different. No service restart here:
-# the operator is driving the rebuild. Pods may be recreated several times, hence the re-check each poll.
-_place_files_during_rebuild() {
-  local P=recover-cluster pod f src saved_sha now_sha meta mode owner group
-  [ -n "$PRESERVE_FILES" ] && [ -d "$PRESERVE_DIR" ] || return 0
-  for pod in $(rec_pod_names); do
-    pod_exec "$pod" true >/dev/null 2>&1 || continue
-    for f in $PRESERVE_FILES; do
-      src="$(_saved_copy "$f")"
-      [ -s "$src" ] || continue
-      saved_sha="$(cat "$src.sha256" 2>/dev/null || true)"
-      now_sha="$(_pod_file_sha "$pod" "$f")"
-      [ -n "$saved_sha" ] && [ "$now_sha" = "$saved_sha" ] && continue
-      meta="$(cat "$src.meta" 2>/dev/null || echo "644 redislabs redislabs")"
-      mode="${meta%% *}"; owner="$(echo "$meta" | awk '{print $2}')"; group="$(echo "$meta" | awk '{print $3}')"
-      if pod_exec "$pod" sh -c 'mkdir -p "$(dirname "$0")" && cat >"$0" && chmod "$1" "$0" && chown "$2:$3" "$0"' \
-           "$f" "$mode" "$owner" "$group" <"$src" >>"$LOG_FILE" 2>&1; then
-        report_add $P "$pod$f" PASS \
-          "placed during the rebuild ($([ -z "$now_sha" ] && echo 'file was missing' || echo 'content differed')) so the operator can continue"
-      else
-        report_add $P "$pod$f" WARN "could not place $f on $pod during the rebuild (pod may be restarting); will retry on the next poll"
-      fi
-    done
-  done
-}
-
 # _wait_node_ok <pod>  - wait until rladmin status shows every node OK again (after a service restart)
 _wait_node_ok() {
   local deadline bad
@@ -291,7 +229,7 @@ phase_recover_cluster() {
   fi
 
   phase_banner "RECOVER CLUSTER" \
-    "Steps 6-7 - patch clusterRecovery=true, wait for Running + flag cleared, pods Ready  (CHANGES THE CLUSTER)"
+    "Steps 6-7 - trusted_ca.pem + certificate, patch clusterRecovery=true, wait for Running + flag cleared, pods Ready  (CHANGES THE CLUSTER)"
 
   case "$PRECHECK_VERDICT" in
     RECOVERY_RECOMMENDED)
@@ -312,8 +250,8 @@ phase_recover_cluster() {
   nodes="$(rec_field '.spec.nodes')"
   nodes="${nodes:-3}"
 
-  # --- Save files the rebuild is known to overwrite -------------------------------------
-  preserve_pod_files
+  # --- Certificate into trusted_ca.pem on every reachable pod before the rebuild -----------------
+  ensure_trusted_ca pre || return 1
 
   # --- Step 6: patch -----------------------------------------------------------
   log "patching rec/$REC spec.clusterRecovery=true"
@@ -346,10 +284,10 @@ phase_recover_cluster() {
     if [ "$state" = "Running" ] && [ "$flag" != "true" ]; then
       break
     fi
-    _place_files_during_rebuild
+    ensure_trusted_ca during
     if [ "$(date +%s)" -ge "$deadline" ]; then
       report_add $P rec-state FAIL \
-        "timed out after ${TIMEOUT_REC}s; last state=$state flag=$flag; states seen:$seen"
+        "timed out after ${TIMEOUT_REC}s; last state=$state flag=$flag; states seen:$seen${TRUSTED_CA_MISSING_PODS:+; $TRUSTED_CA_PATH never appeared on:$TRUSTED_CA_MISSING_PODS}"
       return 1
     fi
     sleep "$POLL_INTERVAL"
@@ -372,8 +310,9 @@ phase_recover_cluster() {
   RL_POD="" # pods were recreated; re-select
   phase_validate_cluster || return 1
 
-  # --- Put preserved files back and restart services where needed ----------------------
-  restore_pod_files
+  # --- Certificate into trusted_ca.pem on every pod after the rebuild, restart where appended -----
+  ensure_trusted_ca post || return 1
+  restart_changed_pods
 
   # --- Move the cluster master to another node -------------------------------------------
   switch_master

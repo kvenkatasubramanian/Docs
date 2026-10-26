@@ -8,7 +8,7 @@
 #   ./rec-recover.sh precheck          read-only health check and verdict
 #   ./rec-recover.sh backup            archive CCS + database files from the pods
 #   ./rec-recover.sh recover-cluster   operator rebuilds the cluster      (asks for confirmation)
-#   ./rec-recover.sh recover-db        recover every database, standard and Active-Active
+#   ./rec-recover.sh recover-db        rladmin recover all, wait, check every database is active
 #   ./rec-recover.sh all               all of the above in order
 #
 # Target cluster is detected from your `oc login` session. Nothing changes on the
@@ -32,7 +32,7 @@ case "$(uname -s 2>/dev/null)" in
     ;;
 esac
 
-# Optional settings file (timeouts, pinning a specific REC, Active-Active defaults).
+# Optional settings file (timeouts, pinning a specific REC, certificate file).
 ENV_FILE="${ENV_FILE:-$SCRIPT_ROOT/rec-recover.env}"
 # shellcheck disable=SC1090
 [ -f "$ENV_FILE" ] && . "$ENV_FILE"
@@ -51,13 +51,12 @@ Commands:
                     Appends O1_G2_Certificate.pem (from the current directory or next to the script) to
                     /etc/opt/redislabs/trusted_ca.pem in each pod as it comes up during the rebuild, and
                     once more on every pod afterwards; each append is followed by supervisorctl restart all.
-  recover-db        Recover every database that is in recovery state: standard databases with their data,
-                    Active-Active databases with data or configuration-only (you are asked per database).
+  recover-db        Show the databases in recovery state, ask for confirmation, run 'rladmin recover all',
+                    wait until nothing is left in recovery state and every database is active.
   all               precheck -> backup -> confirmation -> recover-cluster -> recover-db
 
 Options:
-  --yes             Do not prompt. Accepts the confirmation and uses the Active-Active default
-                    (AA_MODE in rec-recover.env, default: configuration-only). For unattended runs only.
+  --yes             Do not prompt; accepts every confirmation. For unattended runs only.
   -h, --help        This text.
 
 The target namespace and cluster are detected from the cluster you are logged in to with 'oc login'.

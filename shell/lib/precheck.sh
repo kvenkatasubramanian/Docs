@@ -171,7 +171,8 @@ phase_precheck() {
   if [ "$n_reaadb" -gt 0 ]; then
     report_add $P active-active WARN \
       "Active-Active databases present: $reaadb_names." \
-      "'recover-db' will require an explicit --aa-data-bearing / --aa-config-only decision per CRDB."
+      "'recover-db' runs 'rladmin recover all', which recovers them WITH their data. If their peer clusters are live," \
+      "recover those by hand first with 'rladmin recover db <name> only_configuration'."
   fi
 
   # --- Modules (7.2.4-x limitation on old / manually uploaded modules) -----------

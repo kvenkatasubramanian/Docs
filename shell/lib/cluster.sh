@@ -162,16 +162,20 @@ _restart_pod_services() {
 }
 
 # switch_master  - move the cluster master away from the current node (rladmin cluster master set <id>)
+# and confirm with `rladmin status nodes` that it moved: previous and current master are both reported.
 switch_master() {
   local P=master
   [ "$SWITCH_MASTER" = "true" ] || { report_add $P skip INFO "SWITCH_MASTER=false; master left as is"; return 0; }
   RL_POD=""
-  local current target ids
+  local current current_pod target target_pod
   current="$(rl_master_node_id)"
   if [ -z "$current" ]; then
-    report_add $P current WARN "cannot determine the current master node; master not switched"
+    report_add $P current FAIL "cannot determine the current master node from 'rladmin status nodes'; master not switched"
     return 0
   fi
+  current_pod="$(pod_for_node "$current" || echo '?')"
+  report_add $P current INFO "cluster master before the switch: node:$current (pod $current_pod)"
+
   if [ -n "$NEW_MASTER_NODE" ]; then
     target="$NEW_MASTER_NODE"
   else
@@ -179,14 +183,17 @@ switch_master() {
     target="$(rl_status_nodes | awk -F'|' -v cur="node:$current" '$4 == "OK" && $1 != cur { sub(/^node:/, "", $1); print $1 }' | sort -n | head -1)"
   fi
   if [ -z "$target" ] || [ "$target" = "$current" ]; then
-    report_add $P target WARN "no other healthy node to promote (current master node:$current); master not switched"
+    report_add $P target FAIL "no other healthy node to promote (current master node:$current); master not switched"
     return 0
   fi
-  log "switching cluster master from node:$current to node:$target (rladmin cluster master set $target)"
+  target_pod="$(pod_for_node "$target" || echo '?')"
+  log "switching cluster master from node:$current (pod $current_pod) to node:$target (pod $target_pod): rladmin cluster master set $target"
   if ! rl cluster master set "$target" >>"$LOG_FILE" 2>&1; then
     report_add $P set FAIL "rladmin cluster master set $target failed (see $LOG_FILE)"
     return 1
   fi
+
+  # Confirm: re-read the ROLE column until it says the new node is master (up to 120 s)
   local deadline now
   deadline=$(($(date +%s) + 120))
   while :; do
@@ -195,11 +202,13 @@ switch_master() {
     [ "$(date +%s)" -lt "$deadline" ] || break
     sleep "$POLL_INTERVAL"
   done
+  rl status nodes >"$ARTIFACT_DIR/post-master-switch-nodes.txt" 2>&1 || true
   if [ "$now" = "$target" ]; then
-    report_add $P set PASS "cluster master is now node:$target (pod $(pod_for_node "$target" || echo '?')), was node:$current"
+    report_add $P confirmed PASS "master switch confirmed by rladmin status nodes: was node:$current (pod $current_pod), now node:$target (pod $target_pod)"
   else
-    report_add $P set WARN "requested master node:$target but rladmin still reports node:${now:-?}; check 'rladmin status nodes'"
+    report_add $P confirmed FAIL "master switch NOT confirmed: requested node:$target, rladmin status nodes still reports node:${now:-?} as master (was node:$current). Check 'rladmin status nodes' and set it by hand if needed."
   fi
+  return 0
 }
 
 # _wait_node_ok <pod>  - wait until rladmin status shows every node OK again (after a service restart)

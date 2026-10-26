@@ -46,11 +46,6 @@ NEW_MASTER_NODE="${NEW_MASTER_NODE:-}"                   # node id to promote; e
 ASSUME_YES="${ASSUME_YES:-false}"              # --yes: no prompts
 ALLOW_UNBACKED="${ALLOW_UNBACKED:-false}"      # continue even if the backup step could not archive everything
 STRICT_MODULES="${STRICT_MODULES:-false}"      # treat duplicate module versions as blocking
-# Active-Active (CRDB) handling in recover-db:
-#   interactive runs ask per database; --yes runs use AA_MODE unless the database is listed below.
-AA_MODE="${AA_MODE:-config-only}"              # config-only (peers are live) | data (all participants were down)
-AA_DATA_BEARING="${AA_DATA_BEARING:-}"         # comma-separated CRDB names always recovered WITH data
-AA_CONFIG_ONLY="${AA_CONFIG_ONLY:-}"           # comma-separated CRDB names always recovered configuration-only
 
 # Artifacts
 SCRIPT_ROOT="${SCRIPT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -530,7 +525,7 @@ confirm() {
 # ask_yes_no <question>  - returns 0 for yes, 1 for no. Dies without a terminal (callers handle --yes first).
 ask_yes_no() {
   local answer
-  [ -t 0 ] || die "a decision is needed for: $1  (run from a terminal, or set AA_MODE / AA_DATA_BEARING / AA_CONFIG_ONLY in rec-recover.env and use --yes)"
+  [ -t 0 ] || die "a decision is needed for: $1  (run from a terminal, or use --yes)"
   while :; do
     printf '  %s [y/n]: ' "$1" >&2
     read -r answer

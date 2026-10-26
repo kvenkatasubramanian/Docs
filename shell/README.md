@@ -33,8 +33,8 @@ application validation afterwards is yours: check keys, TLS, authentication and 
 ![rec-recover.sh recovery flow](docs/recovery-flow.svg)
 
 Green is read-only, orange changes the cluster, grey is yours to do by hand. The diamonds are the points
-where the script stops and waits for you: the confirmation before the rebuild, the Active-Active question
-per database, and the confirmation before the databases are recovered.
+where the script stops and waits for you: the confirmation before the rebuild and the confirmation before
+the databases are recovered.
 
 ## Assumptions
 
@@ -115,8 +115,10 @@ continue.** To write the archives somewhere bigger, set `ARTIFACT_ROOT` in the s
    Nothing is restarted on pods that already carry it. The file as it was before and after each append is
    kept under the run's `trusted_ca/` folder.
 7. **Moves the cluster master to another node** with `rladmin cluster master set <id>`: the lowest healthy
-   node that is not the current master, or `NEW_MASTER_NODE` from the settings file. Turn off with
-   `SWITCH_MASTER=false`.
+   node that is not the current master, or `NEW_MASTER_NODE` from the settings file. The master before the
+   switch is logged first; afterwards the script re-reads the ROLE column of `rladmin status nodes` until
+   it names the new node and reports both the previous and the current master. If the role has not moved
+   within two minutes, that is a FAIL. Turn off with `SWITCH_MASTER=false`.
 
 `recover-cluster` and `all` look for `O1_G2_Certificate.pem` in the current directory, then next to the
 script, **before anything else runs**, and stop with a clear message if it is not there. `precheck`,
@@ -125,14 +127,19 @@ settings file.
 
 ### `recover-db`  (changes the cluster)
 
-1. Runs `rladmin recover list` and classifies every database as standard or Active-Active.
-2. Asks one question per Active-Active database (see below).
-3. Shows the plan as a table and asks you to type the cluster name.
-4. Recovers one database at a time, in this order: data-bearing Active-Active, all standard databases,
-   configuration-only Active-Active.
-5. Re-runs `rladmin recover list` and expects it to be empty.
+1. Runs `rladmin recover list` and shows the databases in recovery state as a table, marking which ones
+   are Active-Active.
+2. Asks you to type the cluster name.
+3. Runs `rladmin recover all`: every listed database is recovered from its persistence files in one command.
+   Every per-database line rladmin prints (`[<name> (db:<id>) recovery] Initiated.`, `... Completed`) goes
+   into the run log, and the full output is saved as `recover-output.txt`, so any problem can be traced to
+   its database afterwards.
+4. Waits until `rladmin recover list` is empty and `rladmin status databases` reports every database
+   `active`, up to `RL_RECOVER_TIMEOUT`. One status row per recovered database is logged; any that is not
+   `active`, or missing from the status, is a FAIL.
 
 Databases reporting `missing-files` stop the command before anything is recovered, with the checks to make.
+If nothing is in recovery state, the command only runs the status check.
 
 ### `all`
 
@@ -140,22 +147,20 @@ Databases reporting `missing-files` stop the command before anything is recovere
 
 ## Active-Active databases
 
-An Active-Active database has an instance on each participating cluster. For each one the script asks:
+`rladmin recover all` recovers every database, Active-Active instances included, **with its data**. The
+Redis documentation recommends something different for an Active-Active instance whose other participating
+clusters are still up: recover it configuration-only, so it comes back empty and syncs from the live peers.
 
-> Are the OTHER participating clusters of this database up and serving right now?
+| Situation | What to do |
+|---|---|
+| The other participating clusters are **down** too | Nothing special. `recover-db` recovers this instance with its data; do that on **one** cluster only, the others configuration-only. |
+| The other participating clusters are **up** | Before `recover-db`, run `rladmin recover db <name> only_configuration` in a pod for that database. `recover-db` then recovers the rest. |
 
-| Answer | Command used | When |
-|---|---|---|
-| **yes** | `rladmin recover db <name> only_configuration` | Only this cluster failed. The instance comes back empty and syncs from the live peers. |
-| **no** | `rladmin recover db <name>` | Every participating cluster was down. This instance is recovered with its data and becomes the source. Do this on **one** cluster only. |
-
-Standard databases always get their data back. `rladmin recover all` is never used, because the two kinds
-need different treatment.
+The precheck and `recover-db` both warn when Active-Active databases are present.
 
 ## Unattended runs
 
-`--yes` skips every prompt. The confirmation is accepted and Active-Active databases use `AA_MODE`
-(default `config-only`) unless named in `AA_DATA_BEARING` or `AA_CONFIG_ONLY` in the settings file.
+`--yes` skips every prompt; every confirmation is accepted.
 
 ```bash
 ./rec-recover.sh all --yes
@@ -165,8 +170,7 @@ need different treatment.
 
 Optional. Copy `rec-recover.env.example` to `rec-recover.env` next to the script. It documents every
 setting: pinning a cluster, the customer CA certificate file and the `trusted_ca.pem` path in the pods, the
-master switch after recovery, where to write backups, timeouts for very large databases, and the Active-Active
-defaults for unattended runs.
+master switch after recovery, where to write backups, and timeouts for very large databases.
 
 ## Output
 

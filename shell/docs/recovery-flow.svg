@@ -24,8 +24,7 @@
     <line x1="210" y1="200" x2="248" y2="200"/>
     <line x1="420" y1="200" x2="464" y2="200"/>
     <line x1="534" y1="200" x2="568" y2="200"/>
-    <line x1="800" y1="200" x2="826" y2="200"/>
-    <line x1="894" y1="200" x2="918" y2="200"/>
+    <line x1="800" y1="200" x2="918" y2="200"/>
     <line x1="1130" y1="200" x2="1156" y2="200"/>
     <line x1="1224" y1="200" x2="1308" y2="200"/>
   </g>
@@ -55,17 +54,10 @@
     <text x="685" y="215" font-size="12" fill="#4b5563">precheck again → operator rebuild + certificate</text>
   </g>
 
-  <!-- gate 2: Active-Active question -->
-  <g transform="translate(860 200)">
-    <polygon points="0,-34 34,0 0,34 -34,0" fill="#fff8d6" stroke="#d4a017" stroke-width="2"/>
-    <text x="0" y="-44" text-anchor="middle" font-size="12" font-weight="700" fill="#8a6500">Active-Active</text>
-    <text x="0" y="52" text-anchor="middle" font-size="12" font-weight="700" fill="#8a6500">peers live?</text>
-  </g>
-
   <g font-size="14" text-anchor="middle">
     <rect x="920" y="165" width="210" height="70" rx="10" fill="#ffffff" stroke="#ff8c1a" stroke-width="2"/>
     <text x="1025" y="195" font-weight="700" fill="#111827">recover-db</text>
-    <text x="1025" y="215" font-size="12" fill="#4b5563">plan → confirm → one rladmin per DB</text>
+    <text x="1025" y="215" font-size="12" fill="#4b5563">list → confirm → rladmin recover all</text>
 
     <rect x="1310" y="165" width="160" height="70" rx="10" fill="#ffffff" stroke="#9aa3b2" stroke-width="2" stroke-dasharray="6 4"/>
     <text x="1390" y="195" font-weight="700" fill="#111827">validate</text>
@@ -103,13 +95,13 @@
     <text x="685" y="378" text-anchor="middle">    where the certificate is still missing</text>
     <text x="685" y="394" text-anchor="middle">6. rladmin cluster master set &lt;other node&gt;</text>
 
-    <text x="1025" y="282" text-anchor="middle">rladmin recover list</text>
-    <text x="1025" y="298" text-anchor="middle">standard vs Active-Active</text>
-    <text x="1025" y="314" text-anchor="middle">missing-files stops here</text>
-    <text x="1025" y="338" text-anchor="middle">1. data-bearing Active-Active</text>
-    <text x="1025" y="354" text-anchor="middle">2. standard databases</text>
-    <text x="1025" y="370" text-anchor="middle">3. config-only Active-Active</text>
-    <text x="1025" y="394" text-anchor="middle" font-weight="700" fill="#b85c00">never 'recover all'</text>
+    <text x="1025" y="282" text-anchor="middle">rladmin recover list (table)</text>
+    <text x="1025" y="298" text-anchor="middle">missing-files stops here</text>
+    <text x="1025" y="322" text-anchor="middle">1. rladmin recover all</text>
+    <text x="1025" y="338" text-anchor="middle">2. wait: nothing left in recovery state</text>
+    <text x="1025" y="354" text-anchor="middle">3. rladmin status databases: all active</text>
+    <text x="1025" y="378" text-anchor="middle" font-weight="700" fill="#b85c00">Active-Active: recovered with data;</text>
+    <text x="1025" y="394" text-anchor="middle" font-weight="700" fill="#b85c00">peers live → config-only by hand first</text>
 
     <text x="1390" y="282" text-anchor="middle">keys / DBSIZE</text>
     <text x="1390" y="298" text-anchor="middle">app connectivity</text>
@@ -122,12 +114,8 @@
     <text x="500" y="282">verdict shown first</text>
     <text x="500" y="298">healthy cluster →</text>
     <text x="500" y="314">loud warning</text>
-    <text x="860" y="282">asked per database</text>
-    <text x="860" y="298">yes → config only</text>
-    <text x="860" y="314">no → with data</text>
-    <text x="860" y="330">(--yes: AA_MODE)</text>
-    <text x="1190" y="282">table of actions</text>
-    <text x="1190" y="298">per database</text>
+    <text x="1190" y="282">table of databases</text>
+    <text x="1190" y="298">in recovery state</text>
   </g>
 
   <!-- footer -->

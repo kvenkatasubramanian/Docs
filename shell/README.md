@@ -100,24 +100,21 @@ continue.** To write the archives somewhere bigger, set `ARTIFACT_ROOT` in the s
 1. Re-runs the precheck. `BLOCKED` stops here.
 2. Shows the verdict and asks you to **type the cluster name**. A `RECOVERY_NOT_NEEDED` verdict adds a loud
    warning first.
-3. **Completes `trusted_ca.pem` with the customer CA certificate.** On every reachable pod the script checks
-   that `/etc/opt/redislabs/trusted_ca.pem` exists and, unless the certificate is already in it, appends the
-   content of `O1_G2_Certificate.pem` at the bottom, keeping the file's owner and mode. A reachable pod
-   without `trusted_ca.pem` stops the command here, before anything is changed. Pods that cannot be reached
-   (normal when quorum is lost) are handled in the next steps.
-4. Patches `spec.clusterRecovery: true`. The operator recreates the pods on the existing volumes and restores
+3. Patches `spec.clusterRecovery: true`. The operator recreates the pods on the existing volumes and restores
    the cluster configuration.
-5. Waits until the REC is `Running` and the operator has cleared the flag, then until every pod is Ready.
-   **While waiting**, every time a pod becomes reachable and has a `trusted_ca.pem`, the certificate is
-   appended there too if the rebuild produced the file without it. The operator's first-pod recovery needs
-   the certificate and otherwise sits in `RecoveringFirstPod`. No services are restarted at this point,
-   because the operator is driving the rebuild.
-6. Checks `rladmin status`: every node `OK`, no running cluster actions.
-7. **Checks every pod again.** All pods must be reachable and have `trusted_ca.pem`; the certificate is
-   appended wherever it is still missing, and `supervisorctl restart all` runs on those pods only, one at a
-   time. Nothing is restarted on pods that already carry it. The file as it was before and after each append
-   is kept under the run's `trusted_ca/` folder.
-8. **Moves the cluster master to another node** with `rladmin cluster master set <id>`: the lowest healthy
+4. Waits until the REC is `Running` and the operator has cleared the flag, then until every pod is Ready.
+   **While waiting, completes `trusted_ca.pem` with the customer CA certificate**: on every poll, each pod
+   that is up and has `/etc/opt/redislabs/trusted_ca.pem` gets the content of `O1_G2_Certificate.pem`
+   appended at the bottom, keeping the file's owner and mode, unless the certificate is already in it. The
+   operator's first-pod recovery needs the certificate and otherwise sits in `RecoveringFirstPod`. No
+   services are restarted at this point, because the operator is driving the rebuild.
+5. Checks `rladmin status`: every node `OK`, no running cluster actions.
+6. **Checks every pod again.** All pods must be reachable and have `trusted_ca.pem`; a pod without the file
+   stops the command here. The certificate is appended wherever it is still missing, and
+   `supervisorctl restart all` runs on those pods only, one at a time. Nothing is restarted on pods that
+   already carry it. The file as it was before and after each append is kept under the run's `trusted_ca/`
+   folder.
+7. **Moves the cluster master to another node** with `rladmin cluster master set <id>`: the lowest healthy
    node that is not the current master, or `NEW_MASTER_NODE` from the settings file. Turn off with
    `SWITCH_MASTER=false`.
 

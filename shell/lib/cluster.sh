@@ -4,10 +4,10 @@
 #
 #   require_ca_cert_file    recover-cluster / all: the customer CA certificate (O1_G2_Certificate.pem) must be
 #                           on the workstation before anything runs
-#   ensure_trusted_ca       check /etc/opt/redislabs/trusted_ca.pem exists in the pods and append the
-#                           certificate where it is not already present; used before the patch, on every
-#                           poll while the REC rebuilds (the first-pod recovery needs the certificate and
-#                           otherwise sits in RecoveringFirstPod), and once more after the rebuild
+#   ensure_trusted_ca       append the certificate to /etc/opt/redislabs/trusted_ca.pem in the pods where it
+#                           is not already present: on every poll while the REC rebuilds, as the pods come
+#                           up (the first-pod recovery needs the certificate and otherwise sits in
+#                           RecoveringFirstPod), and once more after the rebuild on every pod
 #   phase_recover_cluster   patch spec.clusterRecovery=true, wait for Running AND the flag being
 #                           cleared by the operator, wait for pods (MUTATING)
 #   phase_validate_cluster  rladmin status, all nodes OK, no running actions
@@ -85,16 +85,15 @@ _append_cert_to_pod() {
   return 1
 }
 
-# ensure_trusted_ca <pre|during|post>  - for every pod of the REC:
-#   pod unreachable          pre: INFO (expected when quorum is lost)  during: skip  post: FAIL
-#   trusted_ca.pem missing   pre/post: FAIL (nothing to append to; the script stops)  during: skip, retry next poll
-#   certificate present      PASS (pre/post), silent (during)
+# ensure_trusted_ca <during|post>  - for every pod of the REC:
+#   pod unreachable          during: skip (not up yet)                               post: FAIL
+#   trusted_ca.pem missing   during: skip, retry next poll (operator has not written it)  post: FAIL (nothing to append to; the script stops)
+#   certificate present      during: silent                                          post: PASS
 #   otherwise                append the certificate
-# Returns 1 when anything failed in pre/post. During the rebuild nothing is fatal.
+# Returns 1 when anything failed in post. During the rebuild nothing is fatal.
 ensure_trusted_ca() {
   local mode="$1" P pod rc=0 appended=0 present=0
   case "$mode" in
-    pre)    P=trusted-ca-before ;;
     during) P=recover-cluster ;;
     post)   P=trusted-ca-after ;;
   esac
@@ -103,10 +102,7 @@ ensure_trusted_ca() {
 
   for pod in $(rec_pod_names); do
     if ! pod_exec "$pod" true >/dev/null 2>&1; then
-      case "$mode" in
-        pre)  report_add $P "$pod" INFO "not reachable before the rebuild (expected when quorum is lost); the certificate is appended when the pod comes up" ;;
-        post) report_add $P "$pod" FAIL "not reachable after the rebuild"; rc=1 ;;
-      esac
+      [ "$mode" = post ] && { report_add $P "$pod" FAIL "not reachable after the rebuild"; rc=1; }
       continue
     fi
     if ! _pod_file_exists "$pod" "$TRUSTED_CA_PATH"; then
@@ -229,7 +225,7 @@ phase_recover_cluster() {
   fi
 
   phase_banner "RECOVER CLUSTER" \
-    "Steps 6-7 - trusted_ca.pem + certificate, patch clusterRecovery=true, wait for Running + flag cleared, pods Ready  (CHANGES THE CLUSTER)"
+    "Steps 6-7 - patch clusterRecovery=true, append the certificate to trusted_ca.pem as pods come up, wait for Running + flag cleared, pods Ready  (CHANGES THE CLUSTER)"
 
   case "$PRECHECK_VERDICT" in
     RECOVERY_RECOMMENDED)
@@ -249,9 +245,6 @@ phase_recover_cluster() {
   local nodes
   nodes="$(rec_field '.spec.nodes')"
   nodes="${nodes:-3}"
-
-  # --- Certificate into trusted_ca.pem on every reachable pod before the rebuild -----------------
-  ensure_trusted_ca pre || return 1
 
   # --- Step 6: patch -----------------------------------------------------------
   log "patching rec/$REC spec.clusterRecovery=true"

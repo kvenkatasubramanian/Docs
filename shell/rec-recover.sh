@@ -49,7 +49,8 @@ Commands:
   backup            Archive the cluster configuration (CCS) and database files from every reachable pod.
   recover-cluster   Re-run the precheck, ask for confirmation, then let the operator rebuild the cluster.
                     Appends O1_G2_Certificate.pem (from the current directory or next to the script) to
-                    /etc/opt/redislabs/trusted_ca.pem in every pod before, during and after the rebuild.
+                    /etc/opt/redislabs/trusted_ca.pem in each pod as it comes up during the rebuild, and
+                    once more on every pod afterwards.
   recover-db        Recover every database that is in recovery state: standard databases with their data,
                     Active-Active databases with data or configuration-only (you are asked per database).
   all               precheck -> backup -> confirmation -> recover-cluster -> recover-db
